@@ -300,20 +300,20 @@ async def main():
                                 btns.append({"label": "Альбом", "url": f"https://music.yandex.ru/album/{meta['album_id']}"})
 
                         await rpc.update(
-                            details=meta['title'],
-                            state=f"{meta['artist']} — {meta['album']}",
-                            large_image=meta['cover'],
-                            large_text=f"Трек: {meta['title']}",
+                            details=meta['title'] if meta else raw['title'],
+                            state=f"{meta['artist']} — {meta['album']}" if meta else raw['artist'],
+                            large_image=meta['cover'] if meta else "logo",
+                            large_text=f"Трек: {meta['title'] if meta else raw['title']}",
                             small_image="logo",
                             small_text="VEINYMusic",
                             start=current_start_ts, end=end_ts, activity_type=2,
-                            buttons=btns
+                            buttons=btns if btns else None
                         )
                     else: # PAUSED
                         await rpc.update(
-                            details=f"⏸ {meta['title']}",
-                            state=meta['artist'],
-                            large_image=meta['cover'],
+                            details=f"⏸ {meta['title'] if meta else raw['title']}",
+                            state=meta['artist'] if meta else raw['artist'],
+                            large_image=meta['cover'] if meta else "logo",
                             large_text="На паузе",
                             activity_type=2
                         )
