@@ -142,13 +142,19 @@ async def get_raw_system_media():
             if track_id in rejected_tracks: continue
                 
             meta = meta_cache.get(track_id)
-            if not meta:
+            if not meta and track_id not in meta_cache: # Если track_id есть в кэше со значением None, значит мы его уже разрешили
                 meta = get_track_meta(info.title, info.artist)
                 if meta:
                     meta_cache[track_id] = meta
                 else:
-                    rejected_tracks.add(track_id)
-                    continue
+                    app_id = session.source_app_user_model_id.lower() if session.source_app_user_model_id else ""
+                    # Если трек не найден в API (например, удален или это свой MP3 файл), 
+                    # мы разрешаем его показ ТОЛЬКО если он играет из официального приложения Яндекса
+                    if "yandex" in app_id or "308046b0af4a39cb" in app_id:
+                        meta_cache[track_id] = None
+                    else:
+                        rejected_tracks.add(track_id)
+                        continue
 
             playback = session.get_playback_info()
             timeline = session.get_timeline_properties()
