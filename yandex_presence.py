@@ -35,6 +35,10 @@ def clean_text(text):
     text = text.replace('explicit', '').replace('lyrics', '')
     return " ".join(text.split()).strip()
 
+# Глобальная сессия для ускорения сетевых запросов (переиспользование TCP/TLS соединений)
+session = requests.Session()
+session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+
 def get_track_meta(title, artist):
     """Ищет обложку и инфо о треке через публичный поиск Яндекса"""
     q_artist = clean_text(artist)
@@ -42,8 +46,6 @@ def get_track_meta(title, artist):
     
     # Сначала ищем Название + Артист (так точнее для Яндекса), потом наоборот
     queries = [f"{q_title} {q_artist}", f"{q_artist} {q_title}", q_title]
-    
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
     def format_item(item, original_title):
         if "albums" in item and item["albums"]:
@@ -76,7 +78,7 @@ def get_track_meta(title, artist):
         try:
             encoded_query = quote(query)
             search_url = f"https://music.yandex.ru/handlers/music-search.jsx?text={encoded_query}&type=all"
-            response = requests.get(search_url, headers=headers, timeout=3)
+            response = session.get(search_url, timeout=3)
             if response.status_code == 200:
                 resp = response.json()
                 
@@ -101,8 +103,8 @@ def get_track_meta(title, artist):
                     artist_match = any(a_clean in a or a in a_clean for a in i_artists)
                     
                     if artist_match:
-                        # Если 100% совпадение, возвращаем сразу
-                        if title_similarity >= 0.99:
+                        # Если совпадение очень хорошее (>=90%), возвращаем сразу, чтобы не делать лишние запросы и ускорить работу
+                        if title_similarity >= 0.90:
                             return format_item(item, title)
                         # Иначе сохраняем кандидата с наивысшим баллом
                         if title_similarity > 0.5 and title_similarity > best_similarity:
