@@ -208,9 +208,16 @@ def create_ui(raw, meta, debug_info=None):
     info_table = Table.grid(padding=(0, 2))
     info_table.add_column(style="cyan", justify="right")
     info_table.add_column(style="white bold")
-    info_table.add_row("ТРЕК", d_tit)
-    info_table.add_row("АРТИСТ", d_art)
-    info_table.add_row("АЛЬБОМ", f"[dim]{d_alb}[/dim]")
+    import unicodedata
+    def sanitize(t):
+        if not t: return ""
+        # Удаляем "визуальный мусор" (Zalgo), чтобы не ломать высоту строк
+        t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
+        return t
+
+    info_table.add_row("ТРЕК", Text(sanitize(d_tit), style="bold magenta", no_wrap=True, overflow="ellipsis"))
+    info_table.add_row("АРТИСТ", Text(sanitize(d_art), style="cyan", no_wrap=True, overflow="ellipsis"))
+    info_table.add_row("АЛЬБОМ", Text(sanitize(d_alb), style="white", no_wrap=True, overflow="ellipsis"))
     
     def format_time(seconds):
         m, s = divmod(int(max(0, seconds)), 60)
@@ -317,7 +324,10 @@ async def main():
                             large_text="На паузе",
                             activity_type=2
                         )
-                except Exception:
+                except Exception as e:
+                    import traceback
+                    with open("rpc_error.log", "a", encoding="utf-8") as f:
+                        f.write(f"RPC Update Error at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
                     # Если Discord был закрыт или упал, пытаемся переподключиться тихо
                     try:
                         await rpc.connect()
