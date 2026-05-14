@@ -4,6 +4,8 @@ import requests
 import datetime
 import re
 import difflib
+import os
+import sys
 from urllib.parse import quote
 from pypresence import AioPresence
 from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SessionManager
@@ -13,9 +15,12 @@ from rich.progress import Progress, BarColumn, TextColumn
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
+from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658" 
+CURRENT_COMMIT = "a471612f1679e05f49cd04b3ac4262fb7d70ffbc"
+REPO_URL = "Peaostrel/VEINYMusic"
 console = Console()
 
 def print_glitch_header():
@@ -26,6 +31,44 @@ def print_glitch_header():
     [magenta]------------------------------------------------------------[/magenta]
     """
     console.print(header)
+
+def check_updates():
+    """Проверяет обновления через GitHub API без использования Git"""
+    try:
+        # Проверяем последний коммит в ветке main
+        api_url = f"https://api.github.com/repos/{REPO_URL}/commits/main"
+        response = requests.get(api_url, timeout=5)
+        if response.status_code == 200:
+            latest_commit = response.json().get("sha")
+            if latest_commit and latest_commit != CURRENT_COMMIT:
+                console.print(Panel(
+                    f"[bold yellow]Доступно обновление![/bold yellow]\n"
+                    f"[dim]Текущая версия: {CURRENT_COMMIT[:7]}\n"
+                    f"Новая версия: {latest_commit[:7]}[/dim]\n\n"
+                    "Хотите обновиться сейчас? (скрипт скачает новую версию и перезапустится)",
+                    title="[bold cyan]Update Check[/bold cyan]",
+                    border_style="cyan"
+                ))
+                if Confirm.ask("Обновиться?", default=True):
+                    raw_url = f"https://raw.githubusercontent.com/{REPO_URL}/main/yandex_presence.py"
+                    new_code = requests.get(raw_url, timeout=10).text
+                    if "import" in new_code and "asyncio" in new_code: # Простейшая проверка на целостность
+                        # Обновляем константу в скачанном коде, чтобы не просить обновиться снова
+                        new_code = re.sub(
+                            r'CURRENT_COMMIT = ".*?"', 
+                            f'CURRENT_COMMIT = "{latest_commit}"', 
+                            new_code
+                        )
+                        with open(__file__, "w", encoding="utf-8") as f:
+                            f.write(new_code)
+                        console.print("[bold green]Обновление успешно! Перезапуск...[/bold green]")
+                        time.sleep(1)
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                    else:
+                        console.print("[bold red]Ошибка: Скачанный файл кажется поврежденным.[/bold red]")
+    except Exception as e:
+        # Тихо игнорируем ошибки сети, чтобы не мешать работе скрипта
+        pass
 
 def clean_text(text):
     """Очищает текст от мусора, сохраняя кириллицу"""
@@ -249,6 +292,7 @@ def create_ui(raw, meta, debug_info=None):
 
 async def main():
     print_glitch_header()
+    check_updates()
     rpc = AioPresence(DISCORD_CLIENT_ID)
     try: await rpc.connect()
     except: pass
