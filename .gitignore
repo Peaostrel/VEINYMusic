@@ -1,0 +1,6 @@
+RUN_ME.bat
+__pycache__/
+dist/
+build/
+*.spec
+scratch.py
