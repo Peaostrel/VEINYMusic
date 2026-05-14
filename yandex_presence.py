@@ -1,3 +1,36 @@
+import subprocess
+import sys
+import os
+
+def bootstrap_dependencies():
+    """Проверяет и устанавливает необходимые зависимости"""
+    required = [
+        "requests", "pypresence", "rich", "pystray", 
+        "Pillow", "winsdk"
+    ]
+    missing = []
+    for package in required:
+        try:
+            if package == "Pillow":
+                import PIL
+            elif package == "winsdk":
+                import winsdk
+            else:
+                __import__(package)
+        except ImportError:
+            missing.append(package)
+    
+    if missing:
+        print(f"--- Установка недостающих компонентов: {', '.join(missing)} ---")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+            print("--- Все компоненты успешно установлены! ---")
+        except Exception as e:
+            print(f"Ошибка при установке: {e}")
+            sys.exit(1)
+
+bootstrap_dependencies()
+
 import time
 import asyncio
 import requests
@@ -6,6 +39,11 @@ import re
 import difflib
 import os
 import sys
+import ctypes
+import threading
+from PIL import Image
+import pystray
+from pystray import MenuItem as item
 from urllib.parse import quote
 from pypresence import AioPresence
 from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SessionManager
@@ -31,6 +69,45 @@ def print_glitch_header():
     [magenta]------------------------------------------------------------[/magenta]
     """
     console.print(header)
+
+# Глобальные переменные для управления окном и выходом
+is_console_visible = True
+tray_icon = None
+
+def toggle_console(icon, item):
+    """Переключает видимость окна консоли"""
+    global is_console_visible
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if is_console_visible:
+        ctypes.windll.user32.ShowWindow(hwnd, 0) # Скрыть
+        is_console_visible = False
+    else:
+        ctypes.windll.user32.ShowWindow(hwnd, 5) # Показать
+        is_console_visible = True
+
+def on_exit(icon, item):
+    """Завершает работу скрипта"""
+    icon.stop()
+    os._exit(0)
+
+def setup_tray():
+    """Запускает иконку в трее в отдельном потоке"""
+    global tray_icon
+    
+    icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+    if os.path.exists(icon_path):
+        image = Image.open(icon_path)
+    else:
+        # Если иконки нет, создаем заглушку (фиолетовый квадрат)
+        image = Image.new('RGB', (64, 64), color=(147, 112, 219))
+    
+    menu = pystray.Menu(
+        item('Показать/Скрыть консоль', toggle_console),
+        item('Выход', on_exit)
+    )
+    
+    tray_icon = pystray.Icon("VEINYMusic", image, "VEINYMusic", menu)
+    threading.Thread(target=tray_icon.run, daemon=True).start()
 
 def check_updates():
     """Проверяет обновления через GitHub API без использования Git"""
@@ -293,6 +370,11 @@ def create_ui(raw, meta, debug_info=None):
 async def main():
     print_glitch_header()
     check_updates()
+    
+    # Запускаем трей и скрываем консоль
+    setup_tray()
+    # toggle_console(None, None) # Можно раскомментировать, чтобы скрывать СРАЗУ при запуске
+    
     rpc = AioPresence(DISCORD_CLIENT_ID)
     try: await rpc.connect()
     except: pass
