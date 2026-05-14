@@ -1,13 +1,13 @@
 # VEINYMusic // YANDEX RPC
 
-![VEINYMusic](https://img.shields.io/badge/VEIN-Ecosystem-magenta?style=for-the-badge) ![Zero Config](https://img.shields.io/badge/Zero_Config-100%25-green?style=for-the-badge) ![Windows](https://img.shields.io/badge/OS-Windows_10%2B-blue?style=for-the-badge) ![Version](https://img.shields.io/badge/Version-3.0-cyan?style=for-the-badge)
+![VEINYMusic](https://img.shields.io/badge/VEIN-Ecosystem-magenta?style=for-the-badge) ![Zero Config](https://img.shields.io/badge/Zero_Config-100%25-green?style=for-the-badge) ![Windows](https://img.shields.io/badge/OS-Windows_10%2B-blue?style=for-the-badge)
 
 Бескомпромиссная интеграция Яндекс Музыки в Discord Rich Presence. 
 Разработано для экосистемы **VEIN**. Никаких токенов, никаких костылей с расширениями браузера. Работает напрямую через ядро Windows.
 
 ---
 
-## 🔥 ФИЧИ (v3.0)
+## 🔥 ФИЧИ
 
 - **System Tray Mode (Фоновый режим)**: Сверни окно консоли в трей и забудь. Управляй скриптом через иконку в области уведомлений.
 - **Smart Auto-Update**: Скрипт автоматически проверяет наличие новых коммитов на GitHub при запуске и предлагает обновиться в один клик.
