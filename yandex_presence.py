@@ -128,8 +128,8 @@ def check_updates():
                     new_code = requests.get(raw_url, timeout=10).text
                     if "import" in new_code and "asyncio" in new_code:
                         new_code = re.sub(
-                            r'CURRENT_COMMIT = "6009d98ea2d75e2bc64dcce560a6ca4d5f077c1b"',
-                            f'CURRENT_COMMIT = "6009d98ea2d75e2bc64dcce560a6ca4d5f077c1b"',
+                            r'CURRENT_COMMIT = "[a-f0-9]{40}"',
+                            f'CURRENT_COMMIT = "{latest_commit}"',
                             new_code
                         )
                         with open(__file__, "w", encoding="utf-8") as f:
