@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "86739a031ac27765ccff08a9a1538882d681f550"
+CURRENT_COMMIT = "5aa48e066aade06b54dff48176eaa138bfbcdd61"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 console = Console()
@@ -128,8 +128,8 @@ def check_updates():
                     new_code = requests.get(raw_url, timeout=10).text
                     if "import" in new_code and "asyncio" in new_code:
                         new_code = re.sub(
-                            r'CURRENT_COMMIT = ".*?"',
-                            f'CURRENT_COMMIT = "{latest_commit}"',
+                            r'CURRENT_COMMIT = "6009d98ea2d75e2bc64dcce560a6ca4d5f077c1b"',
+                            f'CURRENT_COMMIT = "6009d98ea2d75e2bc64dcce560a6ca4d5f077c1b"',
                             new_code
                         )
                         with open(__file__, "w", encoding="utf-8") as f:
@@ -289,11 +289,82 @@ def get_track_meta(title, artist):
 
     return None
 
+def get_open_window_titles():
+    """Возвращает список заголовков всех видимых окон в системе"""
+    titles = []
+    def enum_windows_proc(hwnd, lParam):
+        if ctypes.windll.user32.IsWindowVisible(hwnd):
+            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                if buff.value:
+                    titles.append(buff.value)
+        return True
+
+    try:
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        cb_func = WNDENUMPROC(enum_windows_proc)
+        ctypes.windll.user32.EnumWindows(cb_func, 0)
+    except Exception:
+        pass
+    return titles
+
+def is_yandex_music_session(session, info):
+    """Проверяет, относится ли медиа-сессия к Яндекс Музыке"""
+    app_id = (session.source_app_user_model_id or "").lower()
+    title  = (info.title  or "").strip()
+    artist = (info.artist or "").strip()
+
+    # Яндекс Браузер и его App ID — принимаем, но с фильтрами
+    is_yandex_browser = "308046b0af4a39cb" in app_id or "yandex" in app_id
+    # Обычные браузеры — Chrome, Firefox, Edge, Opera, Brave
+    is_other_browser = any(b in app_id for b in ["chrome", "edge", "firefox", "opera", "brave", "browser"])
+
+    if not is_yandex_browser and not is_other_browser:
+        # Не браузер и не Яндекс — неизвестный источник, отклоняем
+        return False
+
+    # Блокируем сессии без исполнителя (фоновый звук сайтов, виджеты)
+    if not artist:
+        return False
+
+    # Блокируем YouTube — у них artist = название канала, но заголовок содержит характерные паттерны
+    title_low = title.lower()
+    artist_low = artist.lower()
+    youtube_signals = ["- youtube", "• youtube", "| youtube", "youtube music"]
+    if any(s in title_low for s in youtube_signals):
+        return False
+    # YouTube часто ставит исполнителя как "- Topic" (официальные каналы)
+    if artist_low.endswith(" - topic"):
+        return False
+
+    # Надёжный способ: YouTube ВСЕГДА добавляет "- YouTube" в заголовок окна/вкладки.
+    # Проверяем — есть ли окно с названием трека И "youtube" в заголовке → это YouTube, блокируем.
+    titles = get_open_window_titles()
+    t_clean = clean_text(title)
+    for wt in titles:
+        wt_low = wt.lower()
+        if "youtube" in wt_low and t_clean and t_clean in wt_low:
+            return False
+
+    # Для обычных браузеров (Firefox, Chrome) — нужно убедиться что открыта вкладка ЯМ
+    if is_other_browser and not is_yandex_browser:
+        has_ym_window = any(
+            "яндекс музыка" in t.lower() or "яндекс.музыка" in t.lower()
+            or "yandex music" in t.lower() or "yandex.music" in t.lower()
+            for t in titles
+        )
+        if not has_ym_window:
+            return False
+
+    return True
+
 meta_cache = {}
 rejected_tracks = set()
 
 async def get_raw_system_media():
-    """Сканирует все сессии и выбирает лучшую (Playing > Paused, затем по времени)"""
+    """Сканирует все сессии и выбирает лучшую (только Яндекс Музыка)"""
     try:
         manager = await SessionManager.request_async()
         sessions = manager.get_sessions()
@@ -302,6 +373,15 @@ async def get_raw_system_media():
         for session in sessions:
             info = await session.try_get_media_properties_async()
             if not info.title: continue
+
+            # Строгая фильтрация: пропускаем всё, что не является Яндекс Музыкой
+            if not is_yandex_music_session(session, info):
+                continue
+
+            # Пропускаем сессии без исполнителя — веб-виджеты и фоновое аудио сайтов
+            # не устанавливают поле artist. Настоящие треки из приложения всегда его имеют.
+            if not info.artist or not info.artist.strip():
+                continue
 
             track_id = f"{info.artist}-{info.title}"
             if track_id in rejected_tracks: continue
@@ -312,12 +392,7 @@ async def get_raw_system_media():
                 if meta:
                     meta_cache[track_id] = meta
                 else:
-                    app_id = session.source_app_user_model_id.lower() if session.source_app_user_model_id else ""
-                    if "yandex" in app_id or "308046b0af4a39cb" in app_id:
-                        meta_cache[track_id] = None
-                    else:
-                        rejected_tracks.add(track_id)
-                        continue
+                    meta_cache[track_id] = None
 
             playback = session.get_playback_info()
             timeline = session.get_timeline_properties()
