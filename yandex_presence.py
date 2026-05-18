@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "a471612f1679e05f49cd04b3ac4262fb7d70ffbc"
+CURRENT_COMMIT = "86739a031ac27765ccff08a9a1538882d681f550"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 console = Console()
@@ -177,12 +177,23 @@ def get_track_meta(title, artist):
             i_title = clean_text(get_title(item))
             i_artist = clean_text(get_artist(item))
             title_sim = similarity(t_clean, i_title)
-            artist_match = (a_clean in i_artist or i_artist in a_clean) if a_clean else False
-            score = title_sim + (0.4 if artist_match else 0)
+            
+            if a_clean:
+                artist_sim = similarity(a_clean, i_artist)
+                artist_match = (a_clean in i_artist or i_artist in a_clean)
+                artist_score = max(artist_sim, 0.8 if artist_match else 0.0)
+                
+                # Если исполнитель вообще не похож, отсекаем этот вариант
+                if artist_score < 0.25:
+                    continue
+                score = title_sim * 0.6 + artist_score * 0.4
+            else:
+                score = title_sim
+                
             if score > best_score:
                 best_score = score
                 best = item
-        return best if best_score >= 0.55 else None
+        return best if best_score >= 0.6 else None
 
     def try_deezer(query):
         """Deezer Search API — публичный, без ключа, хорошо знает и западную, и русскую музыку."""
@@ -351,8 +362,6 @@ def create_ui(raw, meta, debug_info=None):
     d_art = meta['artist'] if meta else raw['artist']
     d_tit = meta['title'] if meta else raw['title']
     d_alb = meta['album'] if meta else "Yandex Music"
-    # Показываем источник метаданных в интерфейсе для удобства отладки
-    source_tag = f" [dim]({meta['_source']})[/dim]" if meta and meta.get('_source') else ""
 
     status_icon = "▶" if raw['status'] == 4 else "⏸"
     status_color = "green" if raw['status'] == 4 else "yellow"
@@ -367,9 +376,13 @@ def create_ui(raw, meta, debug_info=None):
         t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
         return t
 
+    album_text = Text(sanitize(d_alb), style="white", no_wrap=True, overflow="ellipsis")
+    if meta and meta.get('_source'):
+        album_text.append(f" ({meta['_source']})", style="dim")
+
     info_table.add_row("ТРЕК",   Text(sanitize(d_tit), style="bold magenta", no_wrap=True, overflow="ellipsis"))
     info_table.add_row("АРТИСТ", Text(sanitize(d_art), style="cyan",         no_wrap=True, overflow="ellipsis"))
-    info_table.add_row("АЛЬБОМ", Text(sanitize(d_alb) + source_tag, style="white", no_wrap=True, overflow="ellipsis"))
+    info_table.add_row("АЛЬБОМ", album_text)
 
     def format_time(seconds):
         m, s = divmod(int(max(0, seconds)), 60)
@@ -433,7 +446,10 @@ async def main():
 
                 live.update(create_ui(None, None, last_debug), refresh=True)
                 if last_status != "off":
-                    await rpc.clear()
+                    try:
+                        await rpc.clear()
+                    except:
+                        pass
                     last_status = "off"; last_track_id = ""
                 await asyncio.sleep(1)
                 continue
@@ -451,17 +467,6 @@ async def main():
                     if raw['status'] == 4:  # PLAYING
                         end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
 
-                        btns = []
-                        if meta:
-                            track_url = meta.get("_track_link", "")
-                            if track_url:
-                                btns.append({"label": "Слушать", "url": track_url})
-                            src = meta.get("_source", "")
-                            if src == "deezer" and meta.get("album_id"):
-                                btns.append({"label": "Альбом", "url": f"https://www.deezer.com/album/{meta['album_id']}"})
-                            elif src == "itunes" and meta.get("album_id"):
-                                btns.append({"label": "Альбом", "url": f"https://music.apple.com/album/{meta['album_id']}"})
-
                         await rpc.update(
                             details=meta['title'] if meta else raw['title'],
                             state=f"{meta['artist']} — {meta['album']}" if meta else raw['artist'],
@@ -469,8 +474,8 @@ async def main():
                             large_text=f"Трек: {meta['title'] if meta else raw['title']}",
                             small_image="logo",
                             small_text="VEINYMusic",
-                            start=current_start_ts, end=end_ts, activity_type=2,
-                            buttons=btns if btns else None
+                            start=current_start_ts, end=end_ts,
+                            activity_type=2
                         )
                     else:  # PAUSED
                         await rpc.update(
@@ -481,13 +486,22 @@ async def main():
                             activity_type=2
                         )
                 except Exception as e:
+                    err_name = type(e).__name__
                     import traceback
                     with open("rpc_error.log", "a", encoding="utf-8") as f:
-                        f.write(f"RPC Update Error at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
-                    try:
-                        await rpc.connect()
-                    except:
-                        pass
+                        f.write(f"RPC Update Error ({err_name}) at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
+                    
+                    # Если это сетевая ошибка или таймаут, переподключаемся
+                    if err_name in ("ConnectionResetError", "BrokenPipeError", "TimeoutError", "ResponseTimeout", "InvalidID", "ConnectionClosed"):
+                        try:
+                            rpc.close()
+                        except:
+                            pass
+                        rpc = AioPresence(DISCORD_CLIENT_ID)
+                        try:
+                            await rpc.connect()
+                        except:
+                            pass
 
                 last_track_id = track_id
                 last_status   = raw['status']

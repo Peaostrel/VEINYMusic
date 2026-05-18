@@ -2,3 +2,6 @@ pypresence
 winsdk
 rich
 requests
+yandex-music
+selenium
+webdriver-manager
