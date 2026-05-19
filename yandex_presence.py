@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "d579e5cf0ef614b72a3edb528bc6879ca088a2fb"
+CURRENT_COMMIT = "5b40a57e5d92988d0ba6e69b35c353d9d027e2d3"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 console = Console()
@@ -202,8 +202,20 @@ def get_track_meta(title, artist):
     q_artist = clean_text(artist)
     q_title = clean_text(title)
 
+    def transliterate(text):
+        mapping = {
+            'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+            'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+            'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+            'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+            'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+        }
+        return "".join(mapping.get(c, c) for c in text.lower())
+
     def similarity(a, b):
-        return difflib.SequenceMatcher(None, a, b).ratio()
+        ratio = difflib.SequenceMatcher(None, a, b).ratio()
+        ratio_t = difflib.SequenceMatcher(None, transliterate(a), transliterate(b)).ratio()
+        return max(ratio, ratio_t)
 
     def best_match(items, get_title, get_artist):
         """Выбирает лучший результат из списка по схожести с оригиналом."""
@@ -581,21 +593,17 @@ async def main():
 
                         details = meta['title'] if meta else raw['title']
                         state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
-                        large_text = f"Трек: {details}"
 
                         # Truncate strings to Discord's 128-char limit
                         if len(details) > 128:
                             details = details[:125] + "..."
                         if len(state) > 128:
                             state = state[:125] + "..."
-                        if len(large_text) > 128:
-                            large_text = large_text[:125] + "..."
 
                         await rpc.update(
                             details=details,
                             state=state,
                             large_image=meta['cover'] if meta else "logo",
-                            large_text=large_text,
                             small_image="logo",
                             small_text="VEINYMusic",
                             start=current_start_ts, end=end_ts,
@@ -614,7 +622,6 @@ async def main():
                             details=details,
                             state=state,
                             large_image=meta['cover'] if meta else "logo",
-                            large_text="На паузе",
                             activity_type=2
                         )
                 except Exception as e:
