@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "5b40a57e5d92988d0ba6e69b35c353d9d027e2d3"
+CURRENT_COMMIT = "8a6daed22b4c7c9015e6a33ea7bd6200c25080ec"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 console = Console()
@@ -322,7 +322,6 @@ def get_track_meta(title, artist):
     # Пробуем запросы от точного к широкому
     queries = [
         f"{q_title} {q_artist}",
-        f"{q_artist} {q_title}",
         q_title,
     ]
 
@@ -437,11 +436,19 @@ async def get_raw_system_media():
 
             meta = meta_cache.get(track_id)
             if not meta and track_id not in meta_cache:
-                meta = get_track_meta(info.title, info.artist)
-                if meta:
-                    meta_cache[track_id] = meta
-                else:
-                    meta_cache[track_id] = None
+                meta_cache[track_id] = "pending"
+                
+                def fetch_and_cache(t_id, t_title, t_artist):
+                    try:
+                        res = get_track_meta(t_title, t_artist)
+                        meta_cache[t_id] = res
+                    except Exception:
+                        meta_cache[t_id] = None
+                
+                threading.Thread(target=fetch_and_cache, args=(track_id, info.title, info.artist), daemon=True).start()
+                meta = None
+            elif meta == "pending":
+                meta = None
 
             playback = session.get_playback_info()
             timeline = session.get_timeline_properties()
@@ -548,6 +555,7 @@ async def main():
     last_status = None
     last_start_ts = 0
     last_debug = None
+    last_cover = None
 
     with Live(auto_refresh=False, console=console) as live:
         while True:
@@ -574,19 +582,21 @@ async def main():
                         await rpc.clear()
                     except:
                         pass
-                    last_status = "off"; last_track_id = ""
+                    last_status = "off"; last_track_id = ""; last_cover = None
                 await asyncio.sleep(1)
                 continue
 
             track_id = f"{raw['artist']}-{raw['title']}"
             meta = raw['meta']
+            cover = meta['cover'] if meta else None
 
             is_new_track     = track_id != last_track_id
             is_status_changed = raw['status'] != last_status
             current_start_ts = int(now - raw['position'])
             is_seeked        = abs(current_start_ts - last_start_ts) > 2
+            is_cover_updated = cover != last_cover
 
-            if is_new_track or is_status_changed or is_seeked:
+            if is_new_track or is_status_changed or is_seeked or is_cover_updated:
                 try:
                     if raw['status'] == 4:  # PLAYING
                         end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
@@ -645,6 +655,7 @@ async def main():
                 last_track_id = track_id
                 last_status   = raw['status']
                 last_start_ts = current_start_ts
+                last_cover    = cover
 
             live.update(create_ui(raw, meta), refresh=True)
             await asyncio.sleep(0.5)
