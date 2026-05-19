@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "5aa48e066aade06b54dff48176eaa138bfbcdd61"
+CURRENT_COMMIT = "d579e5cf0ef614b72a3edb528bc6879ca088a2fb"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 console = Console()
@@ -91,6 +91,42 @@ def on_exit(icon, item):
     icon.stop()
     os._exit(0)
 
+STARTUP_LNK_PATH = os.path.join(
+    os.environ["APPDATA"],
+    "Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+    "VEINYMusic.lnk"
+)
+
+def is_startup_enabled():
+    return os.path.exists(STARTUP_LNK_PATH)
+
+def toggle_startup(icon, item):
+    if is_startup_enabled():
+        try:
+            os.remove(STARTUP_LNK_PATH)
+        except Exception:
+            pass
+    else:
+        try:
+            bat_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "RUN_ME.bat")
+            working_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            target = bat_path if os.path.exists(bat_path) else sys.executable
+            arguments = "" if os.path.exists(bat_path) else f'"{os.path.abspath(__file__)}"'
+            
+            import subprocess
+            cmd = (
+                f"$WshShell = New-Object -ComObject WScript.Shell; "
+                f"$Shortcut = $WshShell.CreateShortcut('{STARTUP_LNK_PATH}'); "
+                f"$Shortcut.TargetPath = '{target}'; "
+                f"$Shortcut.Arguments = '{arguments}'; "
+                f"$Shortcut.WorkingDirectory = '{working_dir}'; "
+                f"$Shortcut.Save()"
+            )
+            subprocess.run(["powershell", "-Command", cmd], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception:
+            pass
+
 def setup_tray():
     """Запускает иконку в трее в отдельном потоке"""
     global tray_icon
@@ -102,6 +138,7 @@ def setup_tray():
 
     menu = pystray.Menu(
         item('Показать/Скрыть консоль', toggle_console),
+        item('Запуск при старте системы', toggle_startup, checked=lambda item: is_startup_enabled()),
         item('Выход', on_exit)
     )
     tray_icon = pystray.Icon("VEINYMusic", image, "VEINYMusic", menu)
@@ -434,7 +471,7 @@ def create_ui(raw, meta, debug_info=None):
             padding=(1, 2)
         )
 
-    d_art = meta['artist'] if meta else raw['artist']
+    d_art = raw['artist']
     d_tit = meta['title'] if meta else raw['title']
     d_alb = meta['album'] if meta else "Yandex Music"
 
@@ -542,20 +579,40 @@ async def main():
                     if raw['status'] == 4:  # PLAYING
                         end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
 
+                        details = meta['title'] if meta else raw['title']
+                        state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
+                        large_text = f"Трек: {details}"
+
+                        # Truncate strings to Discord's 128-char limit
+                        if len(details) > 128:
+                            details = details[:125] + "..."
+                        if len(state) > 128:
+                            state = state[:125] + "..."
+                        if len(large_text) > 128:
+                            large_text = large_text[:125] + "..."
+
                         await rpc.update(
-                            details=meta['title'] if meta else raw['title'],
-                            state=f"{meta['artist']} — {meta['album']}" if meta else raw['artist'],
+                            details=details,
+                            state=state,
                             large_image=meta['cover'] if meta else "logo",
-                            large_text=f"Трек: {meta['title'] if meta else raw['title']}",
+                            large_text=large_text,
                             small_image="logo",
                             small_text="VEINYMusic",
                             start=current_start_ts, end=end_ts,
                             activity_type=2
                         )
                     else:  # PAUSED
+                        details = f"⏸ {meta['title'] if meta else raw['title']}"
+                        state = raw['artist']
+
+                        if len(details) > 128:
+                            details = details[:125] + "..."
+                        if len(state) > 128:
+                            state = state[:125] + "..."
+
                         await rpc.update(
-                            details=f"⏸ {meta['title'] if meta else raw['title']}",
-                            state=meta['artist'] if meta else raw['artist'],
+                            details=details,
+                            state=state,
                             large_image=meta['cover'] if meta else "logo",
                             large_text="На паузе",
                             activity_type=2
