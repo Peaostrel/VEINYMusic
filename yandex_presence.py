@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "8a6daed22b4c7c9015e6a33ea7bd6200c25080ec"
+CURRENT_COMMIT = "a6b4edfc7b2740bfc8dc4e71974afa193d71739b"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 console = Console()
@@ -363,11 +363,12 @@ def is_yandex_music_session(session, info):
     app_id = (session.source_app_user_model_id or "").lower()
     title  = (info.title  or "").strip()
     artist = (info.artist or "").strip()
+    album_title = (info.album_title or "").strip()
 
     # Яндекс Браузер и его App ID — принимаем, но с фильтрами
-    is_yandex_browser = "308046b0af4a39cb" in app_id or "yandex" in app_id
+    is_yandex_browser = "yandex" in app_id
     # Обычные браузеры — Chrome, Firefox, Edge, Opera, Brave
-    is_other_browser = any(b in app_id for b in ["chrome", "edge", "firefox", "opera", "brave", "browser"])
+    is_other_browser = any(b in app_id for b in ["chrome", "edge", "firefox", "opera", "brave", "browser"]) or "308046b0af4a39cb" in app_id
 
     if not is_yandex_browser and not is_other_browser:
         # Не браузер и не Яндекс — неизвестный источник, отклоняем
@@ -376,6 +377,11 @@ def is_yandex_music_session(session, info):
     # Блокируем сессии без исполнителя (фоновый звук сайтов, виджеты)
     if not artist:
         return False
+
+    # Блокируем YouTube по ключевым словам в названии альбома (если задано)
+    if album_title and "youtube" in album_title.lower():
+        return False
+
 
     # Блокируем YouTube — у них artist = название канала, но заголовок содержит характерные паттерны
     title_low = title.lower()
@@ -394,16 +400,6 @@ def is_yandex_music_session(session, info):
     for wt in titles:
         wt_low = wt.lower()
         if "youtube" in wt_low and t_clean and t_clean in wt_low:
-            return False
-
-    # Для обычных браузеров (Firefox, Chrome) — нужно убедиться что открыта вкладка ЯМ
-    if is_other_browser and not is_yandex_browser:
-        has_ym_window = any(
-            "яндекс музыка" in t.lower() or "яндекс.музыка" in t.lower()
-            or "yandex music" in t.lower() or "yandex.music" in t.lower()
-            for t in titles
-        )
-        if not has_ym_window:
             return False
 
     return True
@@ -435,6 +431,19 @@ async def get_raw_system_media():
             if track_id in rejected_tracks: continue
 
             meta = meta_cache.get(track_id)
+
+            # Если трек не найден в глобальной базе музыки, мы разрешаем его
+            # только если в системе реально открыто окно Яндекс Музыки.
+            if meta is None and track_id in meta_cache:
+                titles = get_open_window_titles()
+                has_ym_window = any(
+                    "яндекс музыка" in t.lower() or "яндекс.музыка" in t.lower()
+                    or "yandex music" in t.lower() or "yandex.music" in t.lower()
+                    for t in titles
+                )
+                if not has_ym_window:
+                    continue
+
             if not meta and track_id not in meta_cache:
                 meta_cache[track_id] = "pending"
                 
