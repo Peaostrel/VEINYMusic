@@ -39,6 +39,7 @@ import re
 import difflib
 import os
 import sys
+import json
 import ctypes
 import threading
 from PIL import Image
@@ -57,7 +58,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "ea3204b6773d292c758741227f8977d665e78c2c"
+CURRENT_COMMIT = "cf473823cb913993295b563c7f81e235e2a3a9a1"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
