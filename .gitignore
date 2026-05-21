@@ -5,3 +5,5 @@ build/
 *.spec
 scratch.py
 discord_token.txt
+config.json
+rpc_error.log

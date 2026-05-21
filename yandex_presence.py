@@ -57,9 +57,48 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "e7af54b74d244184b0da26f2148de45d62028546"
+CURRENT_COMMIT = "8e403f723b57a2990338836a6bfd577081c2c790"
 REPO_URL = "Peaostrel/VEINYMusic"
-LYRICS_OFFSET = 0.8  # Смещение lyrics (в секундах). Положительное значение ускоряет появление текста.
+
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+OLD_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_token.txt")
+
+DEFAULT_CONFIG = {
+    "discord_token": None,
+    "lyrics_enabled": False,
+    "lyrics_offset": 0.8,
+    "startup_enabled": False
+}
+CONFIG = DEFAULT_CONFIG.copy()
+
+def load_config():
+    global CONFIG
+    if os.path.exists(OLD_TOKEN_PATH):
+        try:
+            with open(OLD_TOKEN_PATH, "r", encoding="utf-8") as f:
+                token = f.read().strip()
+                if token:
+                    CONFIG["discord_token"] = token
+            os.remove(OLD_TOKEN_PATH)
+        except Exception:
+            pass
+            
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                CONFIG.update(json.load(f))
+        except Exception:
+            pass
+    save_config()
+
+def save_config():
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(CONFIG, f, indent=4)
+    except Exception:
+        pass
+
+load_config()
 
 console = Console()
 status_manager = None
@@ -67,17 +106,6 @@ status_manager = None
 # --- Discord Custom Status & Lyrics Support ---
 import urllib.parse
 
-def load_discord_token():
-    token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_token.txt")
-    if os.path.exists(token_path):
-        try:
-            with open(token_path, "r", encoding="utf-8") as f:
-                token = f.read().strip()
-                if token:
-                    return token
-        except Exception:
-            pass
-    return None
 
 class DiscordStatusManager:
     def __init__(self, token):
@@ -93,7 +121,7 @@ class DiscordStatusManager:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
-    def backup_status(self):
+    async def backup_status(self):
         """Получает текущий кастомный статус пользователя, чтобы сохранить его"""
         if not self.enabled or self.has_backed_up:
             return
@@ -103,7 +131,7 @@ class DiscordStatusManager:
             return
 
         try:
-            r = requests.get("https://discord.com/api/v9/users/@me/settings", headers=self.headers, timeout=5)
+            r = await asyncio.to_thread(requests.get, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, timeout=5)
             if r.status_code == 200:
                 data = r.json()
                 self.original_status = data.get("custom_status")
@@ -129,7 +157,7 @@ class DiscordStatusManager:
             with open("rpc_error.log", "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Backup Error at {datetime.datetime.now()}: {e}\n")
 
-    def update_status(self, text, emoji_name="🎵"):
+    async def update_status(self, text, emoji_name="🎵"):
         """Обновляет статус, если он изменился, с учетом rate limit"""
         if not self.enabled:
             return
@@ -142,7 +170,7 @@ class DiscordStatusManager:
             return
             
         if not self.has_backed_up:
-            self.backup_status()
+            await self.backup_status()
             if not self.has_backed_up:
                 return  # If backup failed (e.g. rate limit or network), don't update!
 
@@ -157,7 +185,7 @@ class DiscordStatusManager:
             payload = {"custom_status": None}
             
         try:
-            r = requests.patch("https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            r = await asyncio.to_thread(requests.patch, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
             if r.status_code == 200:
                 self.current_status_text = text
             elif r.status_code == 429:
@@ -173,8 +201,42 @@ class DiscordStatusManager:
             with open("rpc_error.log", "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Update Error at {datetime.datetime.now()}: {e}\n")
 
-    def restore_status(self, force_wait=False):
+    async def restore_status(self, force_wait=False):
         """Восстанавливает оригинальный статус"""
+        if not self.enabled or not self.has_backed_up:
+            return
+            
+        now = time.time()
+        if now < self.rate_limit_until:
+            wait_time = self.rate_limit_until - now
+            if force_wait and wait_time < 5.0:
+                await asyncio.sleep(wait_time)
+            else:
+                return
+        
+        payload = {
+            "custom_status": self.original_status
+        }
+        try:
+            r = await asyncio.to_thread(requests.patch, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            if r.status_code == 200:
+                self.has_backed_up = False
+                self.current_status_text = self.original_status.get("text") if self.original_status else None
+            elif r.status_code == 429:
+                data = r.json()
+                retry_after = data.get("retry_after", 5.0)
+                self.rate_limit_until = now + retry_after
+                with open("rpc_error.log", "a", encoding="utf-8") as f:
+                    f.write(f"Discord Status Restore Rate Limit: retry after {retry_after}s at {datetime.datetime.now()}\n")
+            elif r.status_code == 401:
+                self.enabled = False
+        except Exception as e:
+            self.rate_limit_until = now + 5.0  # Cooldown on network error
+            with open("rpc_error.log", "a", encoding="utf-8") as f:
+                f.write(f"Discord Status Restore Error at {datetime.datetime.now()}: {e}\n")
+
+    def restore_status_sync(self, force_wait=False):
+        """Синхронная версия restore_status для вызова при выходе из программы"""
         if not self.enabled or not self.has_backed_up:
             return
             
@@ -194,18 +256,9 @@ class DiscordStatusManager:
             if r.status_code == 200:
                 self.has_backed_up = False
                 self.current_status_text = self.original_status.get("text") if self.original_status else None
-            elif r.status_code == 429:
-                data = r.json()
-                retry_after = data.get("retry_after", 5.0)
-                self.rate_limit_until = now + retry_after
-                with open("rpc_error.log", "a", encoding="utf-8") as f:
-                    f.write(f"Discord Status Restore Rate Limit: retry after {retry_after}s at {datetime.datetime.now()}\n")
-            elif r.status_code == 401:
-                self.enabled = False
         except Exception as e:
-            self.rate_limit_until = now + 5.0  # Cooldown on network error
             with open("rpc_error.log", "a", encoding="utf-8") as f:
-                f.write(f"Discord Status Restore Error at {datetime.datetime.now()}: {e}\n")
+                f.write(f"Discord Status Sync Restore Error at {datetime.datetime.now()}: {e}\n")
 
 def parse_lrc(lrc_text):
     if not lrc_text:
@@ -355,7 +408,7 @@ def on_exit(icon, item):
     """Завершает работу скрипта"""
     icon.stop()
     if status_manager:
-        status_manager.restore_status(force_wait=True)
+        status_manager.restore_status_sync(force_wait=True)
         time.sleep(0.5)  # Даем сетевому запросу гарантированно завершиться
     os._exit(0)
 
@@ -395,23 +448,75 @@ def toggle_startup(icon, item):
         except Exception:
             pass
 
+def prompt_for_token():
+    try:
+        import tkinter as tk
+        from tkinter import simpledialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        msg = (
+            "Для трансляции слов песен необходим ваш токен авторизации Discord.\n\n"
+            "Как получить токен:\n"
+            "1. Откройте Discord в браузере (discord.com/app)\n"
+            "2. Нажмите F12 (Инструменты разработчика)\n"
+            "3. Перейдите во вкладку 'Network' (Сеть)\n"
+            "4. Отправьте любое сообщение в любой чат\n"
+            "5. В появившемся списке кликните на 'messages'\n"
+            "6. Справа прокрутите вниз до раздела 'Request Headers'\n"
+            "7. Найдите строку 'Authorization' и скопируйте ее значение.\n\n"
+            "Вставьте ваш токен ниже:"
+        )
+        token = simpledialog.askstring("VEINYMusic - Ввод токена", msg, parent=root)
+        root.destroy()
+        return token
+    except Exception as e:
+        console.print(f"[bold red]Ошибка при вызове окна ввода токена: {e}[/bold red]")
+        return None
+
 def is_lyrics_enabled(item):
-    return status_manager is not None and status_manager.enabled
+    return CONFIG.get("lyrics_enabled", False)
 
 def toggle_lyrics(icon, item):
     global status_manager
-    if not status_manager:
-        token = load_discord_token()
-        if token:
-            status_manager = DiscordStatusManager(token)
-            status_manager.enabled = True
-        return
-
-    if status_manager.enabled:
-        status_manager.enabled = False
-        status_manager.restore_status()
-    else:
+    is_enabled = not CONFIG.get("lyrics_enabled", False)
+    
+    if is_enabled:
+        token = CONFIG.get("discord_token")
+        if not token:
+            token = prompt_for_token()
+            if token:
+                token = token.strip()
+                CONFIG["discord_token"] = token
+                save_config()
+            else:
+                return  # Пользователь отменил ввод, не включаем слова
+                
+        CONFIG["lyrics_enabled"] = True
+        save_config()
+        if not status_manager:
+            status_manager = DiscordStatusManager(CONFIG["discord_token"])
         status_manager.enabled = True
+    else:
+        CONFIG["lyrics_enabled"] = False
+        save_config()
+        if status_manager and status_manager.enabled:
+            status_manager.enabled = False
+            status_manager.restore_status_sync()
+
+def change_offset(delta):
+    current = CONFIG.get("lyrics_offset", 0.8)
+    CONFIG["lyrics_offset"] = round(current + delta, 1)
+    save_config()
+
+def increase_offset(icon, item):
+    change_offset(0.1)
+
+def decrease_offset(icon, item):
+    change_offset(-0.1)
+
+def get_offset_text(item):
+    return f"Задержка слов: {CONFIG.get('lyrics_offset', 0.8)}с"
 
 def setup_tray():
     """Запускает иконку в трее в отдельном потоке"""
@@ -422,9 +527,15 @@ def setup_tray():
     else:
         image = Image.new('RGB', (64, 64), color=(147, 112, 219))
 
+    offset_menu = pystray.Menu(
+        item('Увеличить (+0.1с)', increase_offset),
+        item('Уменьшить (-0.1с)', decrease_offset)
+    )
+
     menu = pystray.Menu(
         item('Показать/Скрыть консоль', toggle_console),
         item('Слова песен в статусе Discord', toggle_lyrics, checked=is_lyrics_enabled),
+        item(get_offset_text, offset_menu),
         item('Запуск при старте системы', toggle_startup, checked=lambda item: is_startup_enabled()),
         item('Выход', on_exit)
     )
@@ -782,7 +893,7 @@ def create_ui(raw, meta, debug_info=None, current_lyric=None):
         if status_manager and status_manager.enabled:
             msg += "\n\n[dim green]✓ Lyrics Status Sync: Активен (токен загружен)[/dim green]"
         else:
-            msg += "\n\n[dim]💡 Lyrics Status: отключен. Создай [italic]discord_token.txt[/italic] со своим токеном, чтобы транслировать слова песни в статус![/dim]"
+            msg += "\n\n[dim]💡 Lyrics Status: отключен. Вставь свой токен в файл [italic]config.json[/italic], чтобы транслировать слова песни в статус![/dim]"
         return Panel(
             msg,
             title="[bold magenta]VEINYMusic[/bold magenta]",
@@ -854,7 +965,7 @@ async def main():
     setup_tray()
 
     # Инициализируем менеджер кастомных статусов Discord
-    token = load_discord_token()
+    token = CONFIG.get("discord_token")
     if token:
         status_manager = DiscordStatusManager(token)
 
@@ -891,7 +1002,7 @@ async def main():
                 
                 # Восстанавливаем оригинальный кастомный статус, если плеер закрыт
                 if status_manager and status_manager.enabled:
-                    status_manager.restore_status()
+                    await status_manager.restore_status()
 
                 if last_status != "off":
                     try:
@@ -915,20 +1026,21 @@ async def main():
             # Асинхронно запрашиваем текст при смене трека
             if is_new_track:
                 if status_manager and status_manager.enabled:
-                    status_manager.restore_status()  # Мгновенно стираем строчку старой песни
+                    await status_manager.restore_status()  # Мгновенно стираем строчку старой песни
                 if track_id not in lyrics_cache and track_id not in fetching_lyrics:
                     async_fetch_lyrics(track_id, raw['title'], raw['artist'])
 
             # Получаем текущую строчку текста
             lyrics = lyrics_cache.get(track_id)
-            current_lyric = get_current_lyric_line(lyrics, raw['position'] + LYRICS_OFFSET) if lyrics else None
+            offset = CONFIG.get("lyrics_offset", 0.8)
+            current_lyric = get_current_lyric_line(lyrics, raw['position'] + offset) if lyrics else None
 
             # Динамически обновляем статус в Discord
-            if status_manager and status_manager.enabled:
+            if status_manager and status_manager.enabled and CONFIG.get("lyrics_enabled", False):
                 if raw['status'] == 4 and current_lyric:
-                    status_manager.update_status(current_lyric)
+                    await status_manager.update_status(current_lyric)
                 else:
-                    status_manager.restore_status()
+                    await status_manager.restore_status()
 
             if is_new_track or is_status_changed or is_seeked or is_cover_updated:
                 try:
@@ -1001,5 +1113,5 @@ if __name__ == "__main__":
         pass
     finally:
         if status_manager:
-            status_manager.restore_status(force_wait=True)
+            status_manager.restore_status_sync(force_wait=True)
             time.sleep(0.5)
