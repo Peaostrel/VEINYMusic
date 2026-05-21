@@ -2,7 +2,9 @@
 
 ![VEINYMusic](https://img.shields.io/badge/VEIN-Ecosystem-magenta?style=for-the-badge) ![Zero Config](https://img.shields.io/badge/Zero_Config-100%25-green?style=for-the-badge) ![Windows](https://img.shields.io/badge/OS-Windows_10%2B-blue?style=for-the-badge)
 
-![VEINYMusic Demo](Discord_RNXGnDGuEW.gif)
+<div align="center">
+  <img src="Discord_RNXGnDGuEW.gif" alt="VEINYMusic Demo" />
+</div>
 
 Бескомпромиссная интеграция Яндекс Музыки в Discord Rich Presence. 
 Разработано для экосистемы **VEIN**. Работает напрямую через ядро Windows, без костылей с расширениями браузера. Основной функционал (Rich Presence) работает **без токенов**! Токен нужен только для дополнительной функции Караоке.
