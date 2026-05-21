@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "2fcae62e225885f68909f0a592fa9539db57c80d"
+CURRENT_COMMIT = "e7af54b74d244184b0da26f2148de45d62028546"
 REPO_URL = "Peaostrel/VEINYMusic"
 LYRICS_OFFSET = 0.8  # Смещение lyrics (в секундах). Положительное значение ускоряет появление текста.
 
@@ -97,19 +97,35 @@ class DiscordStatusManager:
         """Получает текущий кастомный статус пользователя, чтобы сохранить его"""
         if not self.enabled or self.has_backed_up:
             return
+        
+        now = time.time()
+        if now < self.rate_limit_until:
+            return
+
         try:
             r = requests.get("https://discord.com/api/v9/users/@me/settings", headers=self.headers, timeout=5)
             if r.status_code == 200:
                 data = r.json()
                 self.original_status = data.get("custom_status")
+                
+                # Защита от "грязного" бэкапа: если прошлый запуск не завершился корректно
+                # и оставил слова песни в статусе, мы не должны бэкапить их как оригинал!
+                if self.original_status and self.original_status.get("emoji_name") == "🎵":
+                    self.original_status = None
+                    
                 self.has_backed_up = True
                 if self.original_status:
                     self.current_status_text = self.original_status.get("text")
                 else:
                     self.current_status_text = None
+            elif r.status_code == 429:
+                data = r.json()
+                retry_after = data.get("retry_after", 5.0)
+                self.rate_limit_until = now + retry_after
             elif r.status_code == 401:
                 self.enabled = False
         except Exception as e:
+            self.rate_limit_until = now + 5.0  # Cooldown on network error
             with open("rpc_error.log", "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Backup Error at {datetime.datetime.now()}: {e}\n")
 
@@ -127,8 +143,8 @@ class DiscordStatusManager:
             
         if not self.has_backed_up:
             self.backup_status()
-            if not self.enabled:
-                return
+            if not self.has_backed_up:
+                return  # If backup failed (e.g. rate limit or network), don't update!
 
         payload = {
             "custom_status": {
@@ -153,22 +169,41 @@ class DiscordStatusManager:
             elif r.status_code == 401:
                 self.enabled = False
         except Exception as e:
+            self.rate_limit_until = now + 5.0  # Cooldown on network error
             with open("rpc_error.log", "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Update Error at {datetime.datetime.now()}: {e}\n")
 
-    def restore_status(self):
+    def restore_status(self, force_wait=False):
         """Восстанавливает оригинальный статус"""
         if not self.enabled or not self.has_backed_up:
             return
+            
+        now = time.time()
+        if now < self.rate_limit_until:
+            wait_time = self.rate_limit_until - now
+            if force_wait and wait_time < 5.0:
+                time.sleep(wait_time)
+            else:
+                return
         
         payload = {
             "custom_status": self.original_status
         }
         try:
-            requests.patch("https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
-            self.has_backed_up = False
-            self.current_status_text = self.original_status.get("text") if self.original_status else None
+            r = requests.patch("https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            if r.status_code == 200:
+                self.has_backed_up = False
+                self.current_status_text = self.original_status.get("text") if self.original_status else None
+            elif r.status_code == 429:
+                data = r.json()
+                retry_after = data.get("retry_after", 5.0)
+                self.rate_limit_until = now + retry_after
+                with open("rpc_error.log", "a", encoding="utf-8") as f:
+                    f.write(f"Discord Status Restore Rate Limit: retry after {retry_after}s at {datetime.datetime.now()}\n")
+            elif r.status_code == 401:
+                self.enabled = False
         except Exception as e:
+            self.rate_limit_until = now + 5.0  # Cooldown on network error
             with open("rpc_error.log", "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Restore Error at {datetime.datetime.now()}: {e}\n")
 
@@ -191,6 +226,21 @@ def parse_lrc(lrc_text):
     lines.sort(key=lambda x: x[0])
     return lines
 
+def fuzzy_match_artist(requested, returned):
+    if not requested or not returned:
+        return False
+    req = requested.lower()
+    ret = returned.lower()
+    if req in ret or ret in req:
+        return True
+    
+    req_words = set(re.findall(r'\b\w{3,}\b', req))
+    ret_words = set(re.findall(r'\b\w{3,}\b', ret))
+    
+    if req_words and ret_words:
+        return bool(req_words & ret_words)
+    return False
+
 fetching_lyrics = set()
 lyrics_cache = {}
 
@@ -205,13 +255,32 @@ def async_fetch_lyrics(track_id, title, artist):
             data = None
             if r.status_code == 200:
                 data = r.json()
-            elif r.status_code == 404:
-                search_url = f"https://lrclib.net/api/search?q={quote(f'{q_artist} {q_title}')}"
-                r_search = session.get(search_url, timeout=5)
-                if r_search.status_code == 200:
-                    results = r_search.json()
-                    if results:
-                        data = results[0]
+                if not data.get('syncedLyrics'):
+                    data = None  # Ищем другую версию, если тут нет синхронизированных слов
+            
+            if not data:
+                # Fallback: поиск по разным вариантам запроса
+                search_queries = [
+                    f"{q_artist} {q_title}",
+                    q_title
+                ]
+                for q in search_queries:
+                    search_url = f"https://lrclib.net/api/search?q={quote(q)}"
+                    r_search = session.get(search_url, timeout=5)
+                    if r_search.status_code == 200:
+                        results = r_search.json()
+                        # Ищем ПЕРВЫЙ результат, у которого ЕСТЬ syncedLyrics
+                        for res in results:
+                            if res.get('syncedLyrics'):
+                                # Если ищем только по названию, проверяем совпадение артиста
+                                if q == q_title:
+                                    res_artist = res.get('artistName', '')
+                                    if not fuzzy_match_artist(q_artist, res_artist):
+                                        continue
+                                data = res
+                                break
+                    if data:
+                        break
             
             if data and data.get('syncedLyrics'):
                 parsed = parse_lrc(data['syncedLyrics'])
@@ -233,12 +302,14 @@ def get_current_lyric_line(lyrics, position):
     current_line = None
     line_start_time = 0
     next_line_start_time = None
+    current_index = -1
     
     for i, (ts, txt) in enumerate(lyrics):
         if ts <= position:
             current_line = txt
             line_start_time = ts
             next_line_start_time = lyrics[i+1][0] if i + 1 < len(lyrics) else None
+            current_index = i
         else:
             break
             
@@ -284,7 +355,7 @@ def on_exit(icon, item):
     """Завершает работу скрипта"""
     icon.stop()
     if status_manager:
-        status_manager.restore_status()
+        status_manager.restore_status(force_wait=True)
         time.sleep(0.5)  # Даем сетевому запросу гарантированно завершиться
     os._exit(0)
 
@@ -930,5 +1001,5 @@ if __name__ == "__main__":
         pass
     finally:
         if status_manager:
-            status_manager.restore_status()
+            status_manager.restore_status(force_wait=True)
             time.sleep(0.5)
