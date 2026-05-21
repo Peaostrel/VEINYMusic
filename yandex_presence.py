@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "9f04c48c64925ca3fd6e63ffe9e54f03c38d0c01"
+CURRENT_COMMIT = "f4bb83cf2788869b0c797b64d30265b343a30321"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -510,9 +510,14 @@ def prompt_for_token():
             
         entry.bind("<Control-v>", on_ctrl_v)
         entry.bind("<Control-V>", on_ctrl_v)
-        entry.bind("<Control-m>", on_ctrl_v) # Русская 'ь' это английская 'm' (но тут 'v' это 'м')
-        entry.bind("<Control-М>", on_ctrl_v) # Русская 'М' это английская 'V'
-        entry.bind("<Control-м>", on_ctrl_v) # Русская 'м'
+        
+        # Для русской раскладки надежнее проверять keycode 86 (клавиша V/М на Windows)
+        def on_keypress(event):
+            if event.state & 0x0004 and event.keycode == 86: # 0x0004 - это флаг зажатого Control
+                paste_from_clipboard()
+                return "break"
+                
+        entry.bind("<KeyPress>", on_keypress)
         
         # Центрируем окно
         root.update_idletasks()
