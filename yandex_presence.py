@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "f4bb83cf2788869b0c797b64d30265b343a30321"
+CURRENT_COMMIT = "ea3204b6773d292c758741227f8977d665e78c2c"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -503,14 +503,6 @@ def prompt_for_token():
         btn_ok = tk.Button(root, text="Сохранить и Включить", command=submit, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
         btn_ok.pack(pady=15)
         
-        # Фикс для Ctrl+V на русской раскладке
-        def on_ctrl_v(event):
-            paste_from_clipboard()
-            return "break"
-            
-        entry.bind("<Control-v>", on_ctrl_v)
-        entry.bind("<Control-V>", on_ctrl_v)
-        
         # Для русской раскладки надежнее проверять keycode 86 (клавиша V/М на Windows)
         def on_keypress(event):
             if event.state & 0x0004 and event.keycode == 86: # 0x0004 - это флаг зажатого Control
@@ -518,6 +510,8 @@ def prompt_for_token():
                 return "break"
                 
         entry.bind("<KeyPress>", on_keypress)
+        entry.bind("<Control-v>", lambda e: paste_from_clipboard() or "break")
+        entry.bind("<Control-V>", lambda e: paste_from_clipboard() or "break")
         
         # Центрируем окно
         root.update_idletasks()
