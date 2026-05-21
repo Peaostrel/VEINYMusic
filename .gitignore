@@ -4,3 +4,4 @@ dist/
 build/
 *.spec
 scratch.py
+discord_token.txt

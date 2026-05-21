@@ -57,10 +57,204 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "a6b4edfc7b2740bfc8dc4e71974afa193d71739b"
+CURRENT_COMMIT = "2fcae62e225885f68909f0a592fa9539db57c80d"
 REPO_URL = "Peaostrel/VEINYMusic"
+LYRICS_OFFSET = 0.8  # Смещение lyrics (в секундах). Положительное значение ускоряет появление текста.
 
 console = Console()
+status_manager = None
+
+# --- Discord Custom Status & Lyrics Support ---
+import urllib.parse
+
+def load_discord_token():
+    token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_token.txt")
+    if os.path.exists(token_path):
+        try:
+            with open(token_path, "r", encoding="utf-8") as f:
+                token = f.read().strip()
+                if token:
+                    return token
+        except Exception:
+            pass
+    return None
+
+class DiscordStatusManager:
+    def __init__(self, token):
+        self.token = token
+        self.enabled = bool(token)
+        self.original_status = None
+        self.current_status_text = None
+        self.has_backed_up = False
+        self.rate_limit_until = 0.0
+        self.headers = {
+            "Authorization": self.token,
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+    def backup_status(self):
+        """Получает текущий кастомный статус пользователя, чтобы сохранить его"""
+        if not self.enabled or self.has_backed_up:
+            return
+        try:
+            r = requests.get("https://discord.com/api/v9/users/@me/settings", headers=self.headers, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                self.original_status = data.get("custom_status")
+                self.has_backed_up = True
+                if self.original_status:
+                    self.current_status_text = self.original_status.get("text")
+                else:
+                    self.current_status_text = None
+            elif r.status_code == 401:
+                self.enabled = False
+        except Exception as e:
+            with open("rpc_error.log", "a", encoding="utf-8") as f:
+                f.write(f"Discord Status Backup Error at {datetime.datetime.now()}: {e}\n")
+
+    def update_status(self, text, emoji_name="🎵"):
+        """Обновляет статус, если он изменился, с учетом rate limit"""
+        if not self.enabled:
+            return
+        
+        if text == self.current_status_text:
+            return
+            
+        now = time.time()
+        if now < self.rate_limit_until:
+            return
+            
+        if not self.has_backed_up:
+            self.backup_status()
+            if not self.enabled:
+                return
+
+        payload = {
+            "custom_status": {
+                "text": text[:128] if text else "",
+                "emoji_name": emoji_name,
+                "emoji_id": None
+            }
+        }
+        if not text:
+            payload = {"custom_status": None}
+            
+        try:
+            r = requests.patch("https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            if r.status_code == 200:
+                self.current_status_text = text
+            elif r.status_code == 429:
+                data = r.json()
+                retry_after = data.get("retry_after", 5.0)
+                self.rate_limit_until = now + retry_after
+                with open("rpc_error.log", "a", encoding="utf-8") as f:
+                    f.write(f"Discord Status Rate Limit: retry after {retry_after}s at {datetime.datetime.now()}\n")
+            elif r.status_code == 401:
+                self.enabled = False
+        except Exception as e:
+            with open("rpc_error.log", "a", encoding="utf-8") as f:
+                f.write(f"Discord Status Update Error at {datetime.datetime.now()}: {e}\n")
+
+    def restore_status(self):
+        """Восстанавливает оригинальный статус"""
+        if not self.enabled or not self.has_backed_up:
+            return
+        
+        payload = {
+            "custom_status": self.original_status
+        }
+        try:
+            requests.patch("https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            self.has_backed_up = False
+            self.current_status_text = self.original_status.get("text") if self.original_status else None
+        except Exception as e:
+            with open("rpc_error.log", "a", encoding="utf-8") as f:
+                f.write(f"Discord Status Restore Error at {datetime.datetime.now()}: {e}\n")
+
+def parse_lrc(lrc_text):
+    if not lrc_text:
+        return []
+    lines = []
+    time_pattern = re.compile(r'\[(\d+):(\d+(?:\.\d+)?)\]')
+    for line in lrc_text.splitlines():
+        line = line.strip()
+        matches = time_pattern.findall(line)
+        if not matches:
+            continue
+        text = time_pattern.sub('', line).strip()
+        for min_str, sec_str in matches:
+            minutes = int(min_str)
+            seconds = float(sec_str)
+            timestamp = minutes * 60 + seconds
+            lines.append((timestamp, text))
+    lines.sort(key=lambda x: x[0])
+    return lines
+
+fetching_lyrics = set()
+lyrics_cache = {}
+
+def async_fetch_lyrics(track_id, title, artist):
+    fetching_lyrics.add(track_id)
+    def run():
+        try:
+            q_artist = clean_text(artist)
+            q_title = clean_text(title)
+            url = f"https://lrclib.net/api/get?artist_name={quote(q_artist)}&track_name={quote(q_title)}"
+            r = session.get(url, timeout=5)
+            data = None
+            if r.status_code == 200:
+                data = r.json()
+            elif r.status_code == 404:
+                search_url = f"https://lrclib.net/api/search?q={quote(f'{q_artist} {q_title}')}"
+                r_search = session.get(search_url, timeout=5)
+                if r_search.status_code == 200:
+                    results = r_search.json()
+                    if results:
+                        data = results[0]
+            
+            if data and data.get('syncedLyrics'):
+                parsed = parse_lrc(data['syncedLyrics'])
+                lyrics_cache[track_id] = parsed
+            else:
+                lyrics_cache[track_id] = []
+        except Exception:
+            lyrics_cache[track_id] = []
+        finally:
+            if track_id in fetching_lyrics:
+                fetching_lyrics.remove(track_id)
+    
+    threading.Thread(target=run, daemon=True).start()
+
+def get_current_lyric_line(lyrics, position):
+    if not lyrics:
+        return None
+    
+    current_line = None
+    line_start_time = 0
+    next_line_start_time = None
+    
+    for i, (ts, txt) in enumerate(lyrics):
+        if ts <= position:
+            current_line = txt
+            line_start_time = ts
+            next_line_start_time = lyrics[i+1][0] if i + 1 < len(lyrics) else None
+        else:
+            break
+            
+    if current_line is not None:
+        # Если есть следующая строчка, она ограничивает длительность показа текущей.
+        # Если между строчками гигантская пауза (длинный проигрыш), скрываем слова.
+        if next_line_start_time is not None:
+            limit = min(next_line_start_time - line_start_time, 10.0)
+            if position > line_start_time + limit:
+                return None
+        else:
+            # Для последней строчки песни ограничиваем ее показ 8 секундами, чтобы сбросить статус во время аутро
+            if position > line_start_time + 8.0:
+                return None
+                
+    return current_line
 
 def print_glitch_header():
     """Печатает стилизованный заголовок в духе VEIN"""
@@ -89,6 +283,9 @@ def toggle_console(icon, item):
 def on_exit(icon, item):
     """Завершает работу скрипта"""
     icon.stop()
+    if status_manager:
+        status_manager.restore_status()
+        time.sleep(0.5)  # Даем сетевому запросу гарантированно завершиться
     os._exit(0)
 
 STARTUP_LNK_PATH = os.path.join(
@@ -127,6 +324,24 @@ def toggle_startup(icon, item):
         except Exception:
             pass
 
+def is_lyrics_enabled(item):
+    return status_manager is not None and status_manager.enabled
+
+def toggle_lyrics(icon, item):
+    global status_manager
+    if not status_manager:
+        token = load_discord_token()
+        if token:
+            status_manager = DiscordStatusManager(token)
+            status_manager.enabled = True
+        return
+
+    if status_manager.enabled:
+        status_manager.enabled = False
+        status_manager.restore_status()
+    else:
+        status_manager.enabled = True
+
 def setup_tray():
     """Запускает иконку в трее в отдельном потоке"""
     global tray_icon
@@ -138,6 +353,7 @@ def setup_tray():
 
     menu = pystray.Menu(
         item('Показать/Скрыть консоль', toggle_console),
+        item('Слова песен в статусе Discord', toggle_lyrics, checked=is_lyrics_enabled),
         item('Запуск при старте системы', toggle_startup, checked=lambda item: is_startup_enabled()),
         item('Выход', on_exit)
     )
@@ -486,12 +702,16 @@ async def get_raw_system_media():
         pass
     return None
 
-def create_ui(raw, meta, debug_info=None):
+def create_ui(raw, meta, debug_info=None, current_lyric=None):
     """Создает компактный и надежный интерфейс"""
     if not raw:
         msg = "[bold yellow]Ожидание запуска плеера...[/bold yellow]\n[dim]Включи музыку в Яндекс Музыке в браузере[/dim]"
         if debug_info:
             msg += f"\n\n[dim italic]Система видит: {debug_info}[/dim italic]"
+        if status_manager and status_manager.enabled:
+            msg += "\n\n[dim green]✓ Lyrics Status Sync: Активен (токен загружен)[/dim green]"
+        else:
+            msg += "\n\n[dim]💡 Lyrics Status: отключен. Создай [italic]discord_token.txt[/italic] со своим токеном, чтобы транслировать слова песни в статус![/dim]"
         return Panel(
             msg,
             title="[bold magenta]VEINYMusic[/bold magenta]",
@@ -542,7 +762,12 @@ def create_ui(raw, meta, debug_info=None):
         total_time=format_time(raw['duration'])
     )
 
-    ui_group = Group("", info_table, "", progress, "")
+    if current_lyric:
+        lyric_text = Text(f"♪ {current_lyric} ♪", style="italic magenta bold", justify="center")
+        ui_group = Group("", info_table, "", progress, "", lyric_text, "")
+    else:
+        ui_group = Group("", info_table, "", progress, "")
+
     return Panel(
         ui_group,
         title=f"[bold {status_color}]{status_icon} {raw['status'] == 4 and 'ИГРАЕТ' or 'ПАУЗА'}[/bold {status_color}]",
@@ -552,9 +777,15 @@ def create_ui(raw, meta, debug_info=None):
     )
 
 async def main():
+    global status_manager
     print_glitch_header()
     check_updates()
     setup_tray()
+
+    # Инициализируем менеджер кастомных статусов Discord
+    token = load_discord_token()
+    if token:
+        status_manager = DiscordStatusManager(token)
 
     rpc = AioPresence(DISCORD_CLIENT_ID)
     try: await rpc.connect()
@@ -586,6 +817,11 @@ async def main():
                 except: pass
 
                 live.update(create_ui(None, None, last_debug), refresh=True)
+                
+                # Восстанавливаем оригинальный кастомный статус, если плеер закрыт
+                if status_manager and status_manager.enabled:
+                    status_manager.restore_status()
+
                 if last_status != "off":
                     try:
                         await rpc.clear()
@@ -605,44 +841,62 @@ async def main():
             is_seeked        = abs(current_start_ts - last_start_ts) > 2
             is_cover_updated = cover != last_cover
 
+            # Асинхронно запрашиваем текст при смене трека
+            if is_new_track:
+                if status_manager and status_manager.enabled:
+                    status_manager.restore_status()  # Мгновенно стираем строчку старой песни
+                if track_id not in lyrics_cache and track_id not in fetching_lyrics:
+                    async_fetch_lyrics(track_id, raw['title'], raw['artist'])
+
+            # Получаем текущую строчку текста
+            lyrics = lyrics_cache.get(track_id)
+            current_lyric = get_current_lyric_line(lyrics, raw['position'] + LYRICS_OFFSET) if lyrics else None
+
+            # Динамически обновляем статус в Discord
+            if status_manager and status_manager.enabled:
+                if raw['status'] == 4 and current_lyric:
+                    status_manager.update_status(current_lyric)
+                else:
+                    status_manager.restore_status()
+
             if is_new_track or is_status_changed or is_seeked or is_cover_updated:
                 try:
                     if raw['status'] == 4:  # PLAYING
-                        end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
+                         end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
 
-                        details = meta['title'] if meta else raw['title']
-                        state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
+                         details = meta['title'] if meta else raw['title']
+                         state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
 
-                        # Truncate strings to Discord's 128-char limit
-                        if len(details) > 128:
-                            details = details[:125] + "..."
-                        if len(state) > 128:
-                            state = state[:125] + "..."
+                         # Truncate strings to Discord's 128-char limit
+                         if len(details) > 128:
+                             details = details[:125] + "..."
+                         if len(state) > 128:
+                             state = state[:125] + "..."
 
-                        await rpc.update(
-                            details=details,
-                            state=state,
-                            large_image=meta['cover'] if meta else "logo",
-                            small_image="logo",
-                            small_text="VEINYMusic",
-                            start=current_start_ts, end=end_ts,
-                            activity_type=2
-                        )
+                         await rpc.update(
+                             details=details,
+                             state=state,
+                             large_image=meta['cover'] if meta else "logo",
+                             small_image="logo",
+                             small_text="VEINYMusic",
+                             start=current_start_ts, end=end_ts,
+                             activity_type=2
+                         )
                     else:  # PAUSED
-                        details = f"⏸ {meta['title'] if meta else raw['title']}"
-                        state = raw['artist']
+                         details = f"⏸ {meta['title'] if meta else raw['title']}"
+                         state = raw['artist']
 
-                        if len(details) > 128:
-                            details = details[:125] + "..."
-                        if len(state) > 128:
-                            state = state[:125] + "..."
+                         if len(details) > 128:
+                             details = details[:125] + "..."
+                         if len(state) > 128:
+                             state = state[:125] + "..."
 
-                        await rpc.update(
-                            details=details,
-                            state=state,
-                            large_image=meta['cover'] if meta else "logo",
-                            activity_type=2
-                        )
+                         await rpc.update(
+                             details=details,
+                             state=state,
+                             large_image=meta['cover'] if meta else "logo",
+                             activity_type=2
+                         )
                 except Exception as e:
                     err_name = type(e).__name__
                     import traceback
@@ -666,9 +920,15 @@ async def main():
                 last_start_ts = current_start_ts
                 last_cover    = cover
 
-            live.update(create_ui(raw, meta), refresh=True)
-            await asyncio.sleep(0.5)
+            live.update(create_ui(raw, meta, current_lyric=current_lyric), refresh=True)
+            await asyncio.sleep(0.1)
 
 if __name__ == "__main__":
-    try: asyncio.run(main())
-    except KeyboardInterrupt: pass
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if status_manager:
+            status_manager.restore_status()
+            time.sleep(0.5)
