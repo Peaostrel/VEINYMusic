@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "8e403f723b57a2990338836a6bfd577081c2c790"
+CURRENT_COMMIT = "012a16fab371dd851312d0718f722bddff3758e8"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -451,10 +451,31 @@ def toggle_startup(icon, item):
 def prompt_for_token():
     try:
         import tkinter as tk
-        from tkinter import simpledialog
+        
+        token = None
+        
+        def submit():
+            nonlocal token
+            token = entry.get()
+            root.destroy()
+            
+        def on_closing():
+            root.destroy()
+            
+        def paste_from_clipboard():
+            try:
+                clip = root.clipboard_get()
+                entry.delete(0, tk.END)
+                entry.insert(0, clip)
+            except Exception:
+                pass
+
         root = tk.Tk()
-        root.withdraw()
+        root.title("VEINYMusic - Настройка Discord")
+        root.geometry("550x330")
         root.attributes("-topmost", True)
+        root.protocol("WM_DELETE_WINDOW", on_closing)
+        
         msg = (
             "Для трансляции слов песен необходим ваш токен авторизации Discord.\n\n"
             "Как получить токен:\n"
@@ -464,11 +485,44 @@ def prompt_for_token():
             "4. Отправьте любое сообщение в любой чат\n"
             "5. В появившемся списке кликните на 'messages'\n"
             "6. Справа прокрутите вниз до раздела 'Request Headers'\n"
-            "7. Найдите строку 'Authorization' и скопируйте ее значение.\n\n"
-            "Вставьте ваш токен ниже:"
+            "7. Найдите строку 'Authorization' и скопируйте ее значение.\n"
         )
-        token = simpledialog.askstring("VEINYMusic - Ввод токена", msg, parent=root)
-        root.destroy()
+        
+        tk.Label(root, text=msg, justify=tk.LEFT, font=("Arial", 10)).pack(padx=20, pady=10)
+        
+        frame = tk.Frame(root)
+        frame.pack(padx=20, pady=5, fill=tk.X)
+        
+        tk.Label(frame, text="Ваш токен:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        entry = tk.Entry(frame, width=35)
+        entry.pack(side=tk.LEFT, padx=10)
+        
+        btn_paste = tk.Button(frame, text="Вставить", command=paste_from_clipboard)
+        btn_paste.pack(side=tk.LEFT)
+        
+        btn_ok = tk.Button(root, text="Сохранить и Включить", command=submit, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
+        btn_ok.pack(pady=15)
+        
+        # Фикс для Ctrl+V на русской раскладке
+        def on_ctrl_v(event):
+            paste_from_clipboard()
+            return "break"
+            
+        entry.bind("<Control-v>", on_ctrl_v)
+        entry.bind("<Control-V>", on_ctrl_v)
+        entry.bind("<Control-m>", on_ctrl_v) # Русская 'ь' это английская 'm' (но тут 'v' это 'м')
+        entry.bind("<Control-М>", on_ctrl_v) # Русская 'М' это английская 'V'
+        entry.bind("<Control-м>", on_ctrl_v) # Русская 'м'
+        
+        # Центрируем окно
+        root.update_idletasks()
+        width = root.winfo_width()
+        height = root.winfo_height()
+        x = (root.winfo_screenwidth() // 2) - (width // 2)
+        y = (root.winfo_screenheight() // 2) - (height // 2)
+        root.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+        
+        root.mainloop()
         return token
     except Exception as e:
         console.print(f"[bold red]Ошибка при вызове окна ввода токена: {e}[/bold red]")
