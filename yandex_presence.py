@@ -57,7 +57,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "012a16fab371dd851312d0718f722bddff3758e8"
+CURRENT_COMMIT = "9f04c48c64925ca3fd6e63ffe9e54f03c38d0c01"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -613,7 +613,8 @@ def check_updates():
                     border_style="cyan"
                 ))
                 if Confirm.ask("Обновиться?", default=True):
-                    raw_url = f"https://raw.githubusercontent.com/{REPO_URL}/main/yandex_presence.py"
+                    # Добавляем ?v=latest_commit чтобы обойти кэш GitHub raw CDN (5 минут)
+                    raw_url = f"https://raw.githubusercontent.com/{REPO_URL}/main/yandex_presence.py?v={latest_commit}"
                     new_code = requests.get(raw_url, timeout=10).text
                     if "import" in new_code and "asyncio" in new_code:
                         new_code = re.sub(
