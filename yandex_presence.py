@@ -58,7 +58,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "cf473823cb913993295b563c7f81e235e2a3a9a1"
+CURRENT_COMMIT = "2fc10d3e6e71779fa1e12e2b81b976e6a574c9d2"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -103,6 +103,8 @@ load_config()
 
 console = Console()
 status_manager = None
+shutdown_requested = False
+_ctrl_handler = None
 
 # --- Discord Custom Status & Lyrics Support ---
 import urllib.parse
@@ -381,14 +383,7 @@ def get_current_lyric_line(lyrics, position):
                 
     return current_line
 
-def print_glitch_header():
-    """Печатает стилизованный заголовок в духе VEIN"""
-    header = """
-[magenta]------------------------------------------------------------[/magenta]
-[bold white]  VEINYMusic[/bold white] [dim]- |ч| ! |я| = |А| ! ! [/dim]
-[magenta]------------------------------------------------------------[/magenta]
-"""
-    console.print(header)
+
 
 # Глобальные переменные для управления окном и выходом
 is_console_visible = True
@@ -407,11 +402,9 @@ def toggle_console(icon, item):
 
 def on_exit(icon, item):
     """Завершает работу скрипта"""
+    global shutdown_requested
+    shutdown_requested = True
     icon.stop()
-    if status_manager:
-        status_manager.restore_status_sync(force_wait=True)
-        time.sleep(0.5)  # Даем сетевому запросу гарантированно завершиться
-    os._exit(0)
 
 STARTUP_LNK_PATH = os.path.join(
     os.environ["APPDATA"],
@@ -676,21 +669,23 @@ def get_track_meta(title, artist):
         a_clean = clean_text(artist)
         best, best_score = None, 0.0
         for item in items:
-            i_title = clean_text(get_title(item))
+            raw_title = get_title(item)
+            i_title = clean_text(raw_title)
             i_artist = clean_text(get_artist(item))
             title_sim = similarity(t_clean, i_title)
+            
+            exact_title_bonus = 0.2 if title.lower() == raw_title.lower() else 0.0
             
             if a_clean:
                 artist_sim = similarity(a_clean, i_artist)
                 artist_match = (a_clean in i_artist or i_artist in a_clean)
                 artist_score = max(artist_sim, 0.8 if artist_match else 0.0)
                 
-                # Если исполнитель вообще не похож, отсекаем этот вариант
                 if artist_score < 0.25:
                     continue
-                score = title_sim * 0.6 + artist_score * 0.4
+                score = title_sim * 0.6 + artist_score * 0.4 + exact_title_bonus
             else:
-                score = title_sim
+                score = title_sim + exact_title_bonus
                 
             if score > best_score:
                 best_score = score
@@ -941,6 +936,11 @@ async def get_raw_system_media():
 
 def create_ui(raw, meta, debug_info=None, current_lyric=None):
     """Создает компактный и надежный интерфейс"""
+    header = Text.from_markup("""[magenta]------------------------------------------------------------[/magenta]
+[bold white]  VEINYMusic[/bold white] [dim]- |ч| ! |я| = |А| ! ! [/dim]
+[magenta]------------------------------------------------------------[/magenta]
+""")
+
     if not raw:
         msg = "[bold yellow]Ожидание запуска плеера...[/bold yellow]\n[dim]Включи музыку в Яндекс Музыке в браузере[/dim]"
         if debug_info:
@@ -949,15 +949,16 @@ def create_ui(raw, meta, debug_info=None, current_lyric=None):
             msg += "\n\n[dim green]✓ Lyrics Status Sync: Активен (токен загружен)[/dim green]"
         else:
             msg += "\n\n[dim]💡 Lyrics Status: отключен. Вставь свой токен в файл [italic]config.json[/italic], чтобы транслировать слова песни в статус![/dim]"
-        return Panel(
+        panel = Panel(
             msg,
             title="[bold magenta]VEINYMusic[/bold magenta]",
             border_style="magenta",
             padding=(1, 2)
         )
+        return Group(header, panel)
 
     d_art = raw['artist']
-    d_tit = meta['title'] if meta else raw['title']
+    d_tit = raw['title']
     d_alb = meta['album'] if meta else "Yandex Music"
 
     status_icon = "▶" if raw['status'] == 4 else "⏸"
@@ -1000,24 +1001,40 @@ def create_ui(raw, meta, debug_info=None, current_lyric=None):
     )
 
     if current_lyric:
-        lyric_text = Text(f"♪ {current_lyric} ♪", style="italic magenta bold", justify="center")
-        ui_group = Group("", info_table, "", progress, "", lyric_text, "")
+        lyric_text = Text(f"♪ {current_lyric} ♪", style="italic magenta bold", justify="center", no_wrap=True, overflow="ellipsis")
     else:
-        ui_group = Group("", info_table, "", progress, "")
+        lyric_text = Text(" ", justify="center")
 
-    return Panel(
+    ui_group = Group("", info_table, "", progress, "", lyric_text, "")
+
+    panel = Panel(
         ui_group,
         title=f"[bold {status_color}]{status_icon} {raw['status'] == 4 and 'ИГРАЕТ' or 'ПАУЗА'}[/bold {status_color}]",
-        subtitle="[dim]Синхронизация с Discord активна[/dim]",
+        subtitle="Синхронизация с Discord активна",
         border_style="magenta" if raw['status'] == 4 else "yellow",
         padding=(0, 2)
     )
+    return Group(header, panel)
 
 async def main():
-    global status_manager
-    print_glitch_header()
+    global status_manager, _ctrl_handler
+    os.system("")  # Force enable VT100 ANSI processing in Windows CMD
     check_updates()
     setup_tray()
+
+    # Перехватываем закрытие консоли (крестик)
+    import ctypes
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+    def console_ctrl_handler(ctrl_type):
+        global shutdown_requested
+        if ctrl_type in (0, 2, 5, 6): # Ctrl+C, Close, Logoff, Shutdown
+            shutdown_requested = True
+            time.sleep(3) # Даем главному потоку время на очистку
+            return True
+        return False
+    
+    _ctrl_handler = console_ctrl_handler
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(_ctrl_handler, True)
 
     # Инициализируем менеджер кастомных статусов Discord
     token = CONFIG.get("discord_token")
@@ -1034,8 +1051,12 @@ async def main():
     last_debug = None
     last_cover = None
 
+    # Очищаем экран перед запуском интерфейса, чтобы избежать багов с прокруткой консоли Windows
+    os.system("cls" if os.name == "nt" else "clear")
+    
+    last_ui_state = None
     with Live(auto_refresh=False, console=console) as live:
-        while True:
+        while not shutdown_requested:
             raw = await get_raw_system_media()
             now = time.time()
 
@@ -1053,7 +1074,10 @@ async def main():
                             last_debug += f" (Search: {q_art} {q_tit})"
                 except: pass
 
-                live.update(create_ui(None, None, last_debug), refresh=True)
+                current_ui_state = ("idle", last_debug)
+                if current_ui_state != last_ui_state:
+                    live.update(create_ui(None, None, last_debug), refresh=True)
+                    last_ui_state = current_ui_state
                 
                 # Восстанавливаем оригинальный кастомный статус, если плеер закрыт
                 if status_manager and status_manager.enabled:
@@ -1102,7 +1126,7 @@ async def main():
                     if raw['status'] == 4:  # PLAYING
                          end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
 
-                         details = meta['title'] if meta else raw['title']
+                         details = raw['title']
                          state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
 
                          # Truncate strings to Discord's 128-char limit
@@ -1121,7 +1145,7 @@ async def main():
                              activity_type=2
                          )
                     else:  # PAUSED
-                         details = f"⏸ {meta['title'] if meta else raw['title']}"
+                         details = f"⏸ {raw['title']}"
                          state = raw['artist']
 
                          if len(details) > 128:
@@ -1158,8 +1182,33 @@ async def main():
                 last_start_ts = current_start_ts
                 last_cover    = cover
 
-            live.update(create_ui(raw, meta, current_lyric=current_lyric), refresh=True)
+            current_ui_state = (
+                track_id,
+                raw['status'],
+                int(raw['position']),
+                current_lyric,
+                meta['title'] if meta else None,
+                meta['cover'] if meta else None
+            )
+            if current_ui_state != last_ui_state:
+                live.update(create_ui(raw, meta, current_lyric=current_lyric), refresh=True)
+                last_ui_state = current_ui_state
             await asyncio.sleep(0.1)
+
+    console.print("\n[bold yellow]Очистка статуса... Пожалуйста, подождите.[/bold yellow]")
+    try:
+        await rpc.clear()
+        rpc.close()
+    except:
+        pass
+        
+    if status_manager:
+        await status_manager.restore_status(force_wait=True)
+        await asyncio.sleep(0.5)
+        
+    console.print("[bold green]Статус успешно очищен! Скрипт закрывается...[/bold green]")
+    await asyncio.sleep(1)
+    os._exit(0)
 
 if __name__ == "__main__":
     try:
