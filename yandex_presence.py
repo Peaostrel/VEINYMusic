@@ -58,7 +58,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "2fc10d3e6e71779fa1e12e2b81b976e6a574c9d2"
+CURRENT_COMMIT = "2e90d44b81c54a9cbf156d41e0a69e8f0dc79d9a"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -134,7 +134,7 @@ class DiscordStatusManager:
             return
 
         try:
-            r = await asyncio.to_thread(requests.get, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, timeout=5)
+            r = await asyncio.to_thread(requests.get, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, timeout=15)
             if r.status_code == 200:
                 data = r.json()
                 self.original_status = data.get("custom_status")
@@ -188,7 +188,7 @@ class DiscordStatusManager:
             payload = {"custom_status": None}
             
         try:
-            r = await asyncio.to_thread(requests.patch, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            r = await asyncio.to_thread(requests.patch, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=15)
             if r.status_code == 200:
                 self.current_status_text = text
             elif r.status_code == 429:
@@ -221,7 +221,7 @@ class DiscordStatusManager:
             "custom_status": self.original_status
         }
         try:
-            r = await asyncio.to_thread(requests.patch, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            r = await asyncio.to_thread(requests.patch, "https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=15)
             if r.status_code == 200:
                 self.has_backed_up = False
                 self.current_status_text = self.original_status.get("text") if self.original_status else None
@@ -255,7 +255,7 @@ class DiscordStatusManager:
             "custom_status": self.original_status
         }
         try:
-            r = requests.patch("https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=5)
+            r = requests.patch("https://discord.com/api/v9/users/@me/settings", headers=self.headers, json=payload, timeout=15)
             if r.status_code == 200:
                 self.has_backed_up = False
                 self.current_status_text = self.original_status.get("text") if self.original_status else None
@@ -307,7 +307,7 @@ def async_fetch_lyrics(track_id, title, artist):
             q_artist = clean_text(artist)
             q_title = clean_text(title)
             url = f"https://lrclib.net/api/get?artist_name={quote(q_artist)}&track_name={quote(q_title)}"
-            r = session.get(url, timeout=5)
+            r = session.get(url, timeout=15)
             data = None
             if r.status_code == 200:
                 data = r.json()
@@ -322,7 +322,7 @@ def async_fetch_lyrics(track_id, title, artist):
                 ]
                 for q in search_queries:
                     search_url = f"https://lrclib.net/api/search?q={quote(q)}"
-                    r_search = session.get(search_url, timeout=5)
+                    r_search = session.get(search_url, timeout=15)
                     if r_search.status_code == 200:
                         results = r_search.json()
                         # Ищем ПЕРВЫЙ результат, у которого ЕСТЬ syncedLyrics
