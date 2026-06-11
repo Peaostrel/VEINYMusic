@@ -819,7 +819,7 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
-def get_track_meta(title, artist):
+def get_track_meta(title, artist, album_hint=None):
     """
     Ищет обложку и метаданные трека.
     Источники (по приоритету): Deezer → iTunes.
@@ -975,7 +975,41 @@ def get_track_meta(title, artist):
             if not found:
                 return None
 
+            track_id = found.get("id")
             album = found.get("albums", [{}])[0] if found.get("albums") else {}
+            
+            if track_id:
+                try:
+                    details_url = f"https://api.music.yandex.net/tracks?trackIds={track_id}"
+                    r_details = session.get(details_url, headers=headers, timeout=4)
+                    if r_details.status_code == 200:
+                        details_data = r_details.json()
+                        details_results = details_data.get("result", [])
+                        if details_results:
+                            details_track = details_results[0]
+                            albums_list = details_track.get("albums", [])
+                            if albums_list:
+                                selected_album = None
+                                if album_hint:
+                                    best_album = None
+                                    best_score = -1
+                                    h_clean = clean_text(album_hint)
+                                    for alb in albums_list:
+                                        a_title = alb.get("title", "")
+                                        score = similarity(h_clean, clean_text(a_title))
+                                        if score > best_score:
+                                            best_score = score
+                                            best_album = alb
+                                    if best_score >= 0.5:
+                                        selected_album = best_album
+                                
+                                if not selected_album:
+                                    selected_album = albums_list[0]
+                                
+                                album = selected_album
+                except Exception:
+                    pass
+
             cover_uri = album.get("coverUri") or found.get("coverUri")
             cover = "logo"
             if cover_uri:
@@ -983,7 +1017,6 @@ def get_track_meta(title, artist):
                 if not cover.startswith("http"):
                     cover = "https://" + cover
 
-            track_id = found.get("id")
             return {
                 "id": track_id,
                 "title": found.get("title") or title,
@@ -1137,14 +1170,14 @@ async def get_raw_system_media():
                     meta_cache.clear()
                 meta_cache[track_id] = "pending"
                 
-                def fetch_and_cache(t_id, t_title, t_artist):
+                def fetch_and_cache(t_id, t_title, t_artist, t_album):
                     try:
-                        res = get_track_meta(t_title, t_artist)
+                        res = get_track_meta(t_title, t_artist, t_album)
                         meta_cache[t_id] = res
                     except Exception:
                         meta_cache[t_id] = None
                 
-                threading.Thread(target=fetch_and_cache, args=(track_id, info.title, info.artist), daemon=True).start()
+                threading.Thread(target=fetch_and_cache, args=(track_id, info.title, info.artist, info.album_title), daemon=True).start()
                 meta = None
             elif meta == "pending":
                 meta = None
