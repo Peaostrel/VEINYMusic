@@ -58,14 +58,16 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "2e90d44b81c54a9cbf156d41e0a69e8f0dc79d9a"
+CURRENT_COMMIT = "ab81acb660b73efec539c340a8fef8d90af8383e"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 OLD_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_token.txt")
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rpc_error.log")
 
 DEFAULT_CONFIG = {
     "discord_token": None,
+    "yandex_token": None,
     "lyrics_enabled": False,
     "lyrics_offset": 0.8,
     "startup_enabled": False
@@ -157,7 +159,7 @@ class DiscordStatusManager:
                 self.enabled = False
         except Exception as e:
             self.rate_limit_until = now + 5.0  # Cooldown on network error
-            with open("rpc_error.log", "a", encoding="utf-8") as f:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Backup Error at {datetime.datetime.now()}: {e}\n")
 
     async def update_status(self, text, emoji_name="🎵"):
@@ -195,13 +197,13 @@ class DiscordStatusManager:
                 data = r.json()
                 retry_after = data.get("retry_after", 5.0)
                 self.rate_limit_until = now + retry_after
-                with open("rpc_error.log", "a", encoding="utf-8") as f:
+                with open(LOG_PATH, "a", encoding="utf-8") as f:
                     f.write(f"Discord Status Rate Limit: retry after {retry_after}s at {datetime.datetime.now()}\n")
             elif r.status_code == 401:
                 self.enabled = False
         except Exception as e:
             self.rate_limit_until = now + 5.0  # Cooldown on network error
-            with open("rpc_error.log", "a", encoding="utf-8") as f:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Update Error at {datetime.datetime.now()}: {e}\n")
 
     async def restore_status(self, force_wait=False):
@@ -229,13 +231,13 @@ class DiscordStatusManager:
                 data = r.json()
                 retry_after = data.get("retry_after", 5.0)
                 self.rate_limit_until = now + retry_after
-                with open("rpc_error.log", "a", encoding="utf-8") as f:
+                with open(LOG_PATH, "a", encoding="utf-8") as f:
                     f.write(f"Discord Status Restore Rate Limit: retry after {retry_after}s at {datetime.datetime.now()}\n")
             elif r.status_code == 401:
                 self.enabled = False
         except Exception as e:
             self.rate_limit_until = now + 5.0  # Cooldown on network error
-            with open("rpc_error.log", "a", encoding="utf-8") as f:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Restore Error at {datetime.datetime.now()}: {e}\n")
 
     def restore_status_sync(self, force_wait=False):
@@ -260,7 +262,7 @@ class DiscordStatusManager:
                 self.has_backed_up = False
                 self.current_status_text = self.original_status.get("text") if self.original_status else None
         except Exception as e:
-            with open("rpc_error.log", "a", encoding="utf-8") as f:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(f"Discord Status Sync Restore Error at {datetime.datetime.now()}: {e}\n")
 
 def parse_lrc(lrc_text):
@@ -521,6 +523,181 @@ def prompt_for_token():
         console.print(f"[bold red]Ошибка при вызове окна ввода токена: {e}[/bold red]")
         return None
 
+def prompt_for_yandex_token():
+    try:
+        import tkinter as tk
+        import webbrowser
+        import requests
+        import threading
+        import time
+
+        import base64
+
+        client_id = base64.b64decode("MjNjYWJiYmRjNmNkNDE4YWJiNGIzOWMzMmM0MTE5NWQ=").decode("utf-8")
+        client_secret = base64.b64decode("NTNiYzc1MjM4ZjBjNGQwOGExMThlNTFmZTkyMDMzMDA=").decode("utf-8")
+
+        # 1. Запрос кода устройства
+        try:
+            r = requests.post("https://oauth.yandex.ru/device/code", data={
+                "client_id": client_id
+            }, timeout=10)
+            if r.status_code != 200:
+                console.print(f"[bold red]Ошибка при получении кода устройства: {r.text}[/bold red]")
+                return None
+            data = r.json()
+            device_code = data["device_code"]
+            user_code = data["user_code"]
+            verification_url = data["verification_url"]
+            interval = data.get("interval", 5)
+        except Exception as e:
+            console.print(f"[bold red]Сетевая ошибка при запросе кода Yandex OAuth: {e}[/bold red]")
+            return None
+
+        token_result = [None]
+        flow_success = threading.Event()
+        stop_event = threading.Event()
+
+        root = tk.Tk()
+        root.title("Авторизация в Яндекс.Музыке")
+        root.geometry("520x280")
+        root.attributes("-topmost", True)
+
+        msg = (
+            "Мы открываем страницу подтверждения в вашем браузере.\n"
+            "Пожалуйста, введите код активации ниже, чтобы предоставить доступ:\n\n"
+            "Код также автоматически скопирован в буфер обмена."
+        )
+        tk.Label(root, text=msg, justify=tk.CENTER, font=("Arial", 10)).pack(padx=20, pady=15)
+
+        # Крупное отображение кода
+        code_text = user_code.lower()
+        label_code = tk.Label(root, text=code_text, font=("Arial", 26, "bold"), fg="#e02d5c")
+        label_code.pack(pady=10)
+
+        label_status = tk.Label(root, text="Ожидание подтверждения в браузере...", font=("Arial", 9, "italic"), fg="gray")
+        label_status.pack(pady=10)
+
+        # Копируем в буфер
+        root.clipboard_clear()
+        root.clipboard_append(code_text)
+
+        # Открываем браузер
+        webbrowser.open(verification_url)
+
+        def poll_token():
+            while not stop_event.is_set():
+                try:
+                    r_poll = requests.post("https://oauth.yandex.ru/token", data={
+                        "grant_type": "device_code",
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "code": device_code
+                    }, timeout=10)
+                    
+                    res = r_poll.json()
+                    if r_poll.status_code == 200 and "access_token" in res:
+                        token_result[0] = res["access_token"]
+                        flow_success.set()
+                        root.after(0, root.destroy)
+                        break
+                    elif res.get("error") == "authorization_pending":
+                        pass
+                    elif res.get("error") == "slow_down":
+                        time.sleep(5)
+                    elif res.get("error") in ("expired_token", "invalid_grant"):
+                        break
+                except Exception:
+                    pass
+                
+                for _ in range(interval):
+                    if stop_event.is_set():
+                        break
+                    time.sleep(1)
+
+        poll_thread = threading.Thread(target=poll_token, daemon=True)
+        poll_thread.start()
+
+        def on_closing():
+            stop_event.set()
+            root.destroy()
+
+        root.protocol("WM_DELETE_WINDOW", on_closing)
+        
+        root.update_idletasks()
+        width = root.winfo_width()
+        height = root.winfo_height()
+        x = (root.winfo_screenwidth() // 2) - (width // 2)
+        y = (root.winfo_screenheight() // 2) - (height // 2)
+        root.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+
+        root.mainloop()
+        return token_result[0]
+    except Exception as e:
+        console.print(f"[bold red]Ошибка во время авторизации Yandex: {e}[/bold red]")
+        return None
+
+def get_yandex_status_text(item):
+    if CONFIG.get("yandex_token"):
+        return "Токен Яндекс.Музыки: Установлен"
+    return "Токен Яндекс.Музыки: Не задан"
+
+def configure_yandex_token(icon, item):
+    import tkinter as tk
+    
+    current_token = CONFIG.get("yandex_token")
+    if current_token:
+        choice = None
+        
+        def on_delete():
+            nonlocal choice
+            choice = "delete"
+            root.destroy()
+            
+        def on_reauth():
+            nonlocal choice
+            choice = "reauth"
+            root.destroy()
+            
+        def on_cancel():
+            root.destroy()
+
+        root = tk.Tk()
+        root.title("VEINYMusic - Управление токеном")
+        root.geometry("420x160")
+        root.attributes("-topmost", True)
+        
+        tk.Label(root, text="Токен Яндекс.Музыки уже сохранен в настройках.", font=("Arial", 10, "bold")).pack(pady=20)
+        
+        btn_frame = tk.Frame(root)
+        btn_frame.pack(pady=10)
+        
+        tk.Button(btn_frame, text="Авторизоваться заново", command=on_reauth, bg="#4CAF50", fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Удалить токен", command=on_delete, bg="#f44336", fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Отмена", command=on_cancel, font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
+        
+        root.update_idletasks()
+        width = root.winfo_width()
+        height = root.winfo_height()
+        x = (root.winfo_screenwidth() // 2) - (width // 2)
+        y = (root.winfo_screenheight() // 2) - (height // 2)
+        root.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+
+        root.mainloop()
+        
+        if choice == "delete":
+            CONFIG["yandex_token"] = None
+            save_config()
+            meta_cache.clear()
+            return
+        elif choice != "reauth":
+            return
+            
+    token = prompt_for_yandex_token()
+    if token:
+        CONFIG["yandex_token"] = token
+        save_config()
+        meta_cache.clear()
+
 def is_lyrics_enabled(item):
     return CONFIG.get("lyrics_enabled", False)
 
@@ -583,6 +760,7 @@ def setup_tray():
         item('Показать/Скрыть консоль', toggle_console),
         item('Слова песен в статусе Discord', toggle_lyrics, checked=is_lyrics_enabled),
         item(get_offset_text, offset_menu),
+        item(get_yandex_status_text, configure_yandex_token),
         item('Запуск при старте системы', toggle_startup, checked=lambda item: is_startup_enabled()),
         item('Выход', on_exit)
     )
@@ -767,12 +945,72 @@ def get_track_meta(title, artist):
         except Exception:
             return None
 
+    def try_yandex(query):
+        yandex_token = CONFIG.get("yandex_token")
+        if not yandex_token:
+            return None
+        try:
+            url = f"https://api.music.yandex.net/search?text={quote(query)}&type=track"
+            headers = {
+                "Authorization": f"OAuth {yandex_token}",
+                "User-Agent": "YandexMusicAndroid/24022571",
+                "X-Yandex-Music-Client": "YandexMusicAndroid/24022571"
+            }
+            r = session.get(url, headers=headers, timeout=4)
+            if r.status_code != 200:
+                return None
+            
+            data = r.json()
+            tracks_list = data.get("result", {}).get("tracks", {}).get("results", [])
+            if not tracks_list:
+                return None
+
+            found = best_match(
+                tracks_list,
+                get_title=lambda x: x.get("title", ""),
+                get_artist=lambda x: ", ".join(a.get("name", "") for a in x.get("artists", [])) if x.get("artists") else ""
+            )
+            if not found:
+                return None
+
+            album = found.get("albums", [{}])[0] if found.get("albums") else {}
+            cover_uri = album.get("coverUri") or found.get("coverUri")
+            cover = "logo"
+            if cover_uri:
+                cover = cover_uri.replace("%%", "400x400")
+                if not cover.startswith("http"):
+                    cover = "https://" + cover
+
+            track_id = found.get("id")
+            return {
+                "id": track_id,
+                "title": found.get("title") or title,
+                "artist": ", ".join(a.get("name", "") for a in found.get("artists", [])) if found.get("artists") else artist,
+                "album": album.get("title", "Yandex Music"),
+                "album_id": album.get("id"),
+                "cover": cover,
+                "_track_link": f"https://music.yandex.ru/track/{track_id}",
+                "_source": "yandex",
+            }
+        except Exception:
+            return None
+
     # Пробуем запросы от точного к широкому
     queries = [
         f"{q_title} {q_artist}",
         q_title,
     ]
 
+    # Если есть токен Яндекса, сначала ищем в Яндекс.Музыке
+    if CONFIG.get("yandex_token"):
+        for query in queries:
+            if not query.strip():
+                continue
+            result = try_yandex(query)
+            if result:
+                return result
+
+    # Фолбек на Deezer / iTunes
     for query in queries:
         if not query.strip():
             continue
@@ -882,7 +1120,7 @@ async def get_raw_system_media():
 
             # Если трек не найден в глобальной базе музыки, мы разрешаем его
             # только если в системе реально открыто окно Яндекс Музыки.
-            if meta is None and track_id in meta_cache:
+            if (meta is None or meta == "pending") and track_id in meta_cache:
                 titles = get_open_window_titles()
                 has_ym_window = any(
                     "яндекс музыка" in t.lower() or "яндекс.музыка" in t.lower()
@@ -893,6 +1131,8 @@ async def get_raw_system_media():
                     continue
 
             if not meta and track_id not in meta_cache:
+                if len(meta_cache) > 500:
+                    meta_cache.clear()
                 meta_cache[track_id] = "pending"
                 
                 def fetch_and_cache(t_id, t_title, t_artist):
@@ -937,7 +1177,7 @@ async def get_raw_system_media():
 def create_ui(raw, meta, debug_info=None, current_lyric=None):
     """Создает компактный и надежный интерфейс"""
     header = Text.from_markup("""[magenta]------------------------------------------------------------[/magenta]
-[bold white]  VEINYMusic[/bold white] [dim]- |ч| ! |я| = |А| ! ! [/dim]
+[bold white]  VEINYMusic[/bold white]
 [magenta]------------------------------------------------------------[/magenta]
 """)
 
@@ -949,6 +1189,11 @@ def create_ui(raw, meta, debug_info=None, current_lyric=None):
             msg += "\n\n[dim green]✓ Lyrics Status Sync: Активен (токен загружен)[/dim green]"
         else:
             msg += "\n\n[dim]💡 Lyrics Status: отключен. Вставь свой токен в файл [italic]config.json[/italic], чтобы транслировать слова песни в статус![/dim]"
+        
+        if CONFIG.get("yandex_token"):
+            msg += "\n[dim green]✓ Поиск метаданных: Яндекс.Музыка (токен установлен)[/dim green]"
+        else:
+            msg += "\n[dim]💡 Поиск метаданных: Deezer / iTunes. Установите токен Яндекса для идеального совпадения треков![/dim]"
         panel = Panel(
             msg,
             title="[bold magenta]VEINYMusic[/bold magenta]",
@@ -1074,7 +1319,7 @@ async def main():
                             last_debug += f" (Search: {q_art} {q_tit})"
                 except: pass
 
-                current_ui_state = ("idle", last_debug)
+                current_ui_state = ("idle", last_debug, CONFIG.get("yandex_token"))
                 if current_ui_state != last_ui_state:
                     live.update(create_ui(None, None, last_debug), refresh=True)
                     last_ui_state = current_ui_state
@@ -1107,6 +1352,8 @@ async def main():
                 if status_manager and status_manager.enabled:
                     await status_manager.restore_status()  # Мгновенно стираем строчку старой песни
                 if track_id not in lyrics_cache and track_id not in fetching_lyrics:
+                    if len(lyrics_cache) > 500:
+                        lyrics_cache.clear()
                     async_fetch_lyrics(track_id, raw['title'], raw['artist'])
 
             # Получаем текущую строчку текста
@@ -1162,7 +1409,7 @@ async def main():
                 except Exception as e:
                     err_name = type(e).__name__
                     import traceback
-                    with open("rpc_error.log", "a", encoding="utf-8") as f:
+                    with open(LOG_PATH, "a", encoding="utf-8") as f:
                         f.write(f"RPC Update Error ({err_name}) at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
                     
                     # Если это сетевая ошибка или таймаут, переподключаемся
@@ -1188,7 +1435,8 @@ async def main():
                 int(raw['position']),
                 current_lyric,
                 meta['title'] if meta else None,
-                meta['cover'] if meta else None
+                meta['cover'] if meta else None,
+                CONFIG.get("yandex_token")
             )
             if current_ui_state != last_ui_state:
                 live.update(create_ui(raw, meta, current_lyric=current_lyric), refresh=True)
