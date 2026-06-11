@@ -769,6 +769,8 @@ def setup_tray():
 
 def check_updates():
     """Проверяет обновления через GitHub API без использования Git"""
+    if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".git")):
+        return
     try:
         api_url = f"https://api.github.com/repos/{REPO_URL}/commits/main"
         response = requests.get(api_url, timeout=5)
