@@ -58,7 +58,7 @@ from rich.prompt import Confirm
 
 # --- Configuration ---
 DISCORD_CLIENT_ID = "1503812613052694658"
-CURRENT_COMMIT = "ab81acb660b73efec539c340a8fef8d90af8383e"
+CURRENT_COMMIT = "084d53269a654d47940f10c24b3c1ea554674f34"
 REPO_URL = "Peaostrel/VEINYMusic"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -950,7 +950,7 @@ def get_track_meta(title, artist):
         if not yandex_token:
             return None
         try:
-            url = f"https://api.music.yandex.net/search?text={quote(query)}&type=track"
+            url = f"https://api.music.yandex.net/search?text={quote(query)}&type=track&page=0"
             headers = {
                 "Authorization": f"OAuth {yandex_token}",
                 "User-Agent": "YandexMusicAndroid/24022571",
