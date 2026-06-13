@@ -725,8 +725,8 @@ def toggle_lyrics(icon, item):
         CONFIG["lyrics_enabled"] = False
         save_config()
         if status_manager and status_manager.enabled:
-            status_manager.enabled = False
             status_manager.restore_status_sync()
+            status_manager.enabled = False
 
 def change_offset(delta):
     current = CONFIG.get("lyrics_offset", 0.8)
