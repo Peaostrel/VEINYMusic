@@ -1320,6 +1320,7 @@ async def main():
     rpc_start_ts = 0
     rpc_cover = None
     rpc_album = None
+    rpc_cooldown_until = 0
     
     track_settle_time = 1.5 # seconds to wait before updating Discord RPC / status / fetching lyrics
     track_detected_time = 0
@@ -1431,67 +1432,80 @@ async def main():
                 is_cover_updated = cover != rpc_cover
                 is_album_updated = album_name != rpc_album
 
-                if is_new_rpc_track or is_status_changed or is_seeked or is_cover_updated or is_album_updated:
-                    try:
-                        if raw['status'] == 4:  # PLAYING
-                             end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
+                if now >= rpc_cooldown_until:
+                    if is_new_rpc_track or is_status_changed or is_seeked or is_cover_updated or is_album_updated:
+                        try:
+                            if raw['status'] == 4:  # PLAYING
+                                 end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
 
-                             details = raw['title']
-                             state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
+                                 details = raw['title']
+                                 state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
 
-                             if len(details) > 128:
-                                 details = details[:125] + "..."
-                             if len(state) > 128:
-                                 state = state[:125] + "..."
+                                 if len(details) > 128:
+                                     details = details[:125] + "..."
+                                 if len(state) > 128:
+                                     state = state[:125] + "..."
 
-                             await rpc.update(
-                                 details=details,
-                                 state=state,
-                                 large_image=meta['cover'] if meta else "logo",
-                                 small_image="logo",
-                                 small_text="VEINYMusic",
-                                 start=current_start_ts, end=end_ts,
-                                 activity_type=2
-                             )
-                        else:  # PAUSED
-                             details = f"⏸ {raw['title']}"
-                             state = raw['artist']
+                                 if len(details) < 2:
+                                     details = details.ljust(2)
+                                 if len(state) < 2:
+                                     state = state.ljust(2)
 
-                             if len(details) > 128:
-                                 details = details[:125] + "..."
-                             if len(state) > 128:
-                                 state = state[:125] + "..."
+                                 await rpc.update(
+                                     details=details,
+                                     state=state,
+                                     large_image=meta['cover'] if meta else "logo",
+                                     small_image="logo",
+                                     small_text="VEINYMusic",
+                                     start=current_start_ts, end=end_ts,
+                                     activity_type=2
+                                 )
+                            else:  # PAUSED
+                                 details = f"⏸ {raw['title']}"
+                                 state = raw['artist']
 
-                             await rpc.update(
-                                 details=details,
-                                 state=state,
-                                 large_image=meta['cover'] if meta else "logo",
-                                 activity_type=2
-                             )
-                        
-                        # Update RPC state variables
-                        rpc_track_id = track_id
-                        rpc_status = raw['status']
-                        rpc_start_ts = current_start_ts
-                        rpc_cover = cover
-                        rpc_album = album_name
-                        
-                    except Exception as e:
-                        err_name = type(e).__name__
-                        import traceback
-                        with open(LOG_PATH, "a", encoding="utf-8") as f:
-                            f.write(f"RPC Update Error ({err_name}) at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
-                        
-                        if err_name in ("ConnectionResetError", "BrokenPipeError", "TimeoutError", "ResponseTimeout", "InvalidID", "ConnectionClosed"):
-                            try:
-                                rpc.close()
-                            except:
-                                pass
-                            rpc = AioPresence(DISCORD_CLIENT_ID)
-                            try:
-                                await rpc.connect()
-                            except:
-                                pass
+                                 if len(details) > 128:
+                                     details = details[:125] + "..."
+                                 if len(state) > 128:
+                                     state = state[:125] + "..."
+
+                                 if len(details) < 2:
+                                     details = details.ljust(2)
+                                 if len(state) < 2:
+                                     state = state.ljust(2)
+
+                                 await rpc.update(
+                                     details=details,
+                                     state=state,
+                                     large_image=meta['cover'] if meta else "logo",
+                                     activity_type=2
+                                 )
+                            
+                            # Update RPC state variables
+                            rpc_track_id = track_id
+                            rpc_status = raw['status']
+                            rpc_start_ts = current_start_ts
+                            rpc_cover = cover
+                            rpc_album = album_name
+                            
+                        except Exception as e:
+                            err_name = type(e).__name__
+                            import traceback
+                            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                                f.write(f"RPC Update Error ({err_name}) at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
+                            
+                            rpc_cooldown_until = now + 10.0
+                            
+                            if err_name != "ServerError":
+                                try:
+                                    rpc.close()
+                                except:
+                                    pass
+                                rpc = AioPresence(DISCORD_CLIENT_ID)
+                                try:
+                                    await rpc.connect()
+                                except:
+                                    pass
 
             current_ui_state = (
                 track_id,
