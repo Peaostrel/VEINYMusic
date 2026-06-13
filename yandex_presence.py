@@ -1165,21 +1165,7 @@ async def get_raw_system_media():
                 if not has_ym_window:
                     continue
 
-            if not meta and track_id not in meta_cache:
-                if len(meta_cache) > 500:
-                    meta_cache.clear()
-                meta_cache[track_id] = "pending"
-                
-                def fetch_and_cache(t_id, t_title, t_artist, t_album):
-                    try:
-                        res = get_track_meta(t_title, t_artist, t_album)
-                        meta_cache[t_id] = res
-                    except Exception:
-                        meta_cache[t_id] = None
-                
-                threading.Thread(target=fetch_and_cache, args=(track_id, info.title, info.artist, info.album_title), daemon=True).start()
-                meta = None
-            elif meta == "pending":
+            if meta == "pending":
                 meta = None
 
             playback = session.get_playback_info()
@@ -1194,6 +1180,7 @@ async def get_raw_system_media():
             candidates.append({
                 "title": info.title,
                 "artist": info.artist or "Unknown",
+                "album_title": info.album_title,
                 "duration": timeline.end_time.total_seconds(),
                 "position": pos,
                 "status": playback.playback_status,
@@ -1325,11 +1312,18 @@ async def main():
     try: await rpc.connect()
     except: pass
 
-    last_track_id = ""
-    last_status = None
-    last_start_ts = 0
     last_debug = None
-    last_cover = None
+
+    # Variables for Discord RPC debouncing
+    rpc_track_id = ""
+    rpc_status = "off"
+    rpc_start_ts = 0
+    rpc_cover = None
+    rpc_album = None
+    
+    track_settle_time = 1.5 # seconds to wait before updating Discord RPC / status / fetching lyrics
+    track_detected_time = 0
+    current_detected_track_id = ""
 
     # Очищаем экран перед запуском интерфейса, чтобы избежать багов с прокруткой консоли Windows
     os.system("cls" if os.name == "nt" else "clear")
@@ -1363,106 +1357,141 @@ async def main():
                 if status_manager and status_manager.enabled:
                     await status_manager.restore_status()
 
-                if last_status != "off":
+                if rpc_status != "off":
                     try:
                         await rpc.clear()
                     except:
                         pass
-                    last_status = "off"; last_track_id = ""; last_cover = None
+                    rpc_status = "off"
+                    rpc_track_id = ""
+                    rpc_cover = None
+                    rpc_album = None
+                    current_detected_track_id = ""
                 await asyncio.sleep(1)
                 continue
 
             track_id = f"{raw['artist']}-{raw['title']}"
-            meta = raw['meta']
-            cover = meta['cover'] if meta else None
-
-            is_new_track     = track_id != last_track_id
-            is_status_changed = raw['status'] != last_status
-            current_start_ts = int(now - raw['position'])
-            is_seeked        = abs(current_start_ts - last_start_ts) > 2
-            is_cover_updated = cover != last_cover
-
-            # Асинхронно запрашиваем текст при смене трека
-            if is_new_track:
+            
+            # Update the detected track tracking
+            if track_id != current_detected_track_id:
+                current_detected_track_id = track_id
+                track_detected_time = time.time()
+                
+                # Immediately clear lyrics when skipping tracks to avoid lingering text
                 if status_manager and status_manager.enabled:
-                    await status_manager.restore_status()  # Мгновенно стираем строчку старой песни
+                    await status_manager.restore_status()
+
+            is_settled = (time.time() - track_detected_time) >= track_settle_time
+            meta = raw['meta']
+
+            # If settled, we trigger metadata fetch, lyrics fetch, and RPC update
+            if is_settled:
+                # 1. Fetch metadata if not in cache
+                if not meta and track_id not in meta_cache:
+                    if len(meta_cache) > 500:
+                        meta_cache.clear()
+                    meta_cache[track_id] = "pending"
+                    
+                    def fetch_and_cache(t_id, t_title, t_artist, t_album):
+                        try:
+                            res = get_track_meta(t_title, t_artist, t_album)
+                            meta_cache[t_id] = res
+                        except Exception:
+                            meta_cache[t_id] = None
+                    
+                    threading.Thread(target=fetch_and_cache, args=(track_id, raw['title'], raw['artist'], raw['album_title']), daemon=True).start()
+                
+                # 2. Fetch lyrics if not in cache
                 if track_id not in lyrics_cache and track_id not in fetching_lyrics:
                     if len(lyrics_cache) > 500:
                         lyrics_cache.clear()
                     async_fetch_lyrics(track_id, raw['title'], raw['artist'])
 
-            # Получаем текущую строчку текста
-            lyrics = lyrics_cache.get(track_id)
-            offset = CONFIG.get("lyrics_offset", 0.8)
-            current_lyric = get_current_lyric_line(lyrics, raw['position'] + offset) if lyrics else None
+            current_lyric = None
+            if is_settled:
+                # Get lyrics and update custom status
+                lyrics = lyrics_cache.get(track_id)
+                offset = CONFIG.get("lyrics_offset", 0.8)
+                current_lyric = get_current_lyric_line(lyrics, raw['position'] + offset) if lyrics else None
 
-            # Динамически обновляем статус в Discord
-            if status_manager and status_manager.enabled and CONFIG.get("lyrics_enabled", False):
-                if raw['status'] == 4 and current_lyric:
-                    await status_manager.update_status(current_lyric)
-                else:
-                    await status_manager.restore_status()
+                if status_manager and status_manager.enabled and CONFIG.get("lyrics_enabled", False):
+                    if raw['status'] == 4 and current_lyric:
+                        await status_manager.update_status(current_lyric)
+                    else:
+                        await status_manager.restore_status()
+                
+                # 3. Update Discord RPC
+                cover = meta['cover'] if meta else None
+                album_name = meta['album'] if meta else None
+                
+                is_new_rpc_track = track_id != rpc_track_id
+                is_status_changed = raw['status'] != rpc_status
+                current_start_ts = int(now - raw['position'])
+                is_seeked = abs(current_start_ts - rpc_start_ts) > 2
+                is_cover_updated = cover != rpc_cover
+                is_album_updated = album_name != rpc_album
 
-            if is_new_track or is_status_changed or is_seeked or is_cover_updated:
-                try:
-                    if raw['status'] == 4:  # PLAYING
-                         end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
+                if is_new_rpc_track or is_status_changed or is_seeked or is_cover_updated or is_album_updated:
+                    try:
+                        if raw['status'] == 4:  # PLAYING
+                             end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
 
-                         details = raw['title']
-                         state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
+                             details = raw['title']
+                             state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
 
-                         # Truncate strings to Discord's 128-char limit
-                         if len(details) > 128:
-                             details = details[:125] + "..."
-                         if len(state) > 128:
-                             state = state[:125] + "..."
+                             if len(details) > 128:
+                                 details = details[:125] + "..."
+                             if len(state) > 128:
+                                 state = state[:125] + "..."
 
-                         await rpc.update(
-                             details=details,
-                             state=state,
-                             large_image=meta['cover'] if meta else "logo",
-                             small_image="logo",
-                             small_text="VEINYMusic",
-                             start=current_start_ts, end=end_ts,
-                             activity_type=2
-                         )
-                    else:  # PAUSED
-                         details = f"⏸ {raw['title']}"
-                         state = raw['artist']
+                             await rpc.update(
+                                 details=details,
+                                 state=state,
+                                 large_image=meta['cover'] if meta else "logo",
+                                 small_image="logo",
+                                 small_text="VEINYMusic",
+                                 start=current_start_ts, end=end_ts,
+                                 activity_type=2
+                             )
+                        else:  # PAUSED
+                             details = f"⏸ {raw['title']}"
+                             state = raw['artist']
 
-                         if len(details) > 128:
-                             details = details[:125] + "..."
-                         if len(state) > 128:
-                             state = state[:125] + "..."
+                             if len(details) > 128:
+                                 details = details[:125] + "..."
+                             if len(state) > 128:
+                                 state = state[:125] + "..."
 
-                         await rpc.update(
-                             details=details,
-                             state=state,
-                             large_image=meta['cover'] if meta else "logo",
-                             activity_type=2
-                         )
-                except Exception as e:
-                    err_name = type(e).__name__
-                    import traceback
-                    with open(LOG_PATH, "a", encoding="utf-8") as f:
-                        f.write(f"RPC Update Error ({err_name}) at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
-                    
-                    # Если это сетевая ошибка или таймаут, переподключаемся
-                    if err_name in ("ConnectionResetError", "BrokenPipeError", "TimeoutError", "ResponseTimeout", "InvalidID", "ConnectionClosed"):
-                        try:
-                            rpc.close()
-                        except:
-                            pass
-                        rpc = AioPresence(DISCORD_CLIENT_ID)
-                        try:
-                            await rpc.connect()
-                        except:
-                            pass
-
-                last_track_id = track_id
-                last_status   = raw['status']
-                last_start_ts = current_start_ts
-                last_cover    = cover
+                             await rpc.update(
+                                 details=details,
+                                 state=state,
+                                 large_image=meta['cover'] if meta else "logo",
+                                 activity_type=2
+                             )
+                        
+                        # Update RPC state variables
+                        rpc_track_id = track_id
+                        rpc_status = raw['status']
+                        rpc_start_ts = current_start_ts
+                        rpc_cover = cover
+                        rpc_album = album_name
+                        
+                    except Exception as e:
+                        err_name = type(e).__name__
+                        import traceback
+                        with open(LOG_PATH, "a", encoding="utf-8") as f:
+                            f.write(f"RPC Update Error ({err_name}) at {datetime.datetime.now()}:\n{traceback.format_exc()}\n")
+                        
+                        if err_name in ("ConnectionResetError", "BrokenPipeError", "TimeoutError", "ResponseTimeout", "InvalidID", "ConnectionClosed"):
+                            try:
+                                rpc.close()
+                            except:
+                                pass
+                            rpc = AioPresence(DISCORD_CLIENT_ID)
+                            try:
+                                await rpc.connect()
+                            except:
+                                pass
 
             current_ui_state = (
                 track_id,
