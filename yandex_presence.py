@@ -1386,9 +1386,7 @@ async def main():
                 current_detected_track_id = track_id
                 track_detected_time = time.time()
                 
-                # Immediately clear lyrics when skipping tracks to avoid lingering text
-                if status_manager and status_manager.enabled:
-                    await status_manager.restore_status()
+                # (No need to restore status here, we will immediately update it below)
 
             is_settled = (time.time() - track_detected_time) >= track_settle_time
             meta = raw['meta']
@@ -1418,16 +1416,16 @@ async def main():
 
             current_lyric = None
             if is_settled:
-                # Get lyrics and update custom status
+                # Get lyrics
                 lyrics = lyrics_cache.get(track_id)
                 offset = CONFIG.get("lyrics_offset", 0.8)
                 current_lyric = get_current_lyric_line(lyrics, raw['position'] + offset) if lyrics else None
 
-                if status_manager and status_manager.enabled:
-                    if raw['status'] == 4 and CONFIG.get("lyrics_enabled", False) and current_lyric:
-                        await status_manager.update_status(current_lyric, emoji_name="🎵")
-                    else:
-                        await status_manager.update_status(raw['artist'], emoji_name=None)
+            if status_manager and status_manager.enabled:
+                if raw['status'] == 4 and CONFIG.get("lyrics_enabled", False) and current_lyric:
+                    await status_manager.update_status(current_lyric, emoji_name="🎵")
+                else:
+                    await status_manager.update_status(raw['artist'], emoji_name=None)
                 
                 # 3. Update Discord RPC
                 cover = meta['cover'] if meta else None
