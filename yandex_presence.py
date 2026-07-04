@@ -182,10 +182,15 @@ class DiscordStatusManager:
         payload = {
             "custom_status": {
                 "text": text[:128] if text else "",
-                "emoji_name": emoji_name,
-                "emoji_id": None
             }
         }
+        if emoji_name:
+            payload["custom_status"]["emoji_name"] = emoji_name
+            payload["custom_status"]["emoji_id"] = None
+        else:
+            payload["custom_status"]["emoji_name"] = None
+            payload["custom_status"]["emoji_id"] = None
+
         if not text:
             payload = {"custom_status": None}
             
@@ -201,6 +206,9 @@ class DiscordStatusManager:
                     f.write(f"Discord Status Rate Limit: retry after {retry_after}s at {datetime.datetime.now()}\n")
             elif r.status_code == 401:
                 self.enabled = False
+            else:
+                with open(LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(f"Discord Status Update Error ({r.status_code}) at {datetime.datetime.now()}: {r.text}\n")
         except Exception as e:
             self.rate_limit_until = now + 5.0  # Cooldown on network error
             with open(LOG_PATH, "a", encoding="utf-8") as f:
@@ -1156,7 +1164,7 @@ async def get_raw_system_media():
             # Если трек не найден в глобальной базе музыки, мы разрешаем его
             # только если в системе реально открыто окно Яндекс Музыки.
             if (meta is None or meta == "pending") and track_id in meta_cache:
-                titles = get_open_window_titles()
+                titles = await asyncio.to_thread(get_open_window_titles)
                 has_ym_window = any(
                     "яндекс музыка" in t.lower() or "яндекс.музыка" in t.lower()
                     or "yandex music" in t.lower() or "yandex.music" in t.lower()
@@ -1415,11 +1423,11 @@ async def main():
                 offset = CONFIG.get("lyrics_offset", 0.8)
                 current_lyric = get_current_lyric_line(lyrics, raw['position'] + offset) if lyrics else None
 
-                if status_manager and status_manager.enabled and CONFIG.get("lyrics_enabled", False):
-                    if raw['status'] == 4 and current_lyric:
-                        await status_manager.update_status(current_lyric)
+                if status_manager and status_manager.enabled:
+                    if raw['status'] == 4 and CONFIG.get("lyrics_enabled", False) and current_lyric:
+                        await status_manager.update_status(current_lyric, emoji_name="🎵")
                     else:
-                        await status_manager.restore_status()
+                        await status_manager.update_status(raw['artist'], emoji_name=None)
                 
                 # 3. Update Discord RPC
                 cover = meta['cover'] if meta else None
