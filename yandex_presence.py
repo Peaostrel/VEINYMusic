@@ -1526,11 +1526,8 @@ async def main():
                                     rpc.close()
                                 except:
                                     pass
-                                rpc = AioPresence(DISCORD_CLIENT_ID)
-                                try:
-                                    await rpc.connect()
-                                except:
-                                    pass
+                                rpc_connected = False
+                                rpc_reconnect_time = now + 10.0
 
             current_ui_state = (
                 track_id,
