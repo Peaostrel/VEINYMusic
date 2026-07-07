@@ -35,6 +35,18 @@ import time
 import asyncio
 import requests
 import datetime
+
+# Fix for harmless asyncio ValueError on Windows when pipes close (e.g. Discord RPC)
+if sys.platform == 'win32':
+    import asyncio.proactor_events
+    def silence_event_loop_closed(func):
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception:
+                pass
+        return wrapper
+    asyncio.proactor_events._ProactorBasePipeTransport.__del__ = silence_event_loop_closed(asyncio.proactor_events._ProactorBasePipeTransport.__del__)
 import re
 import difflib
 import os
@@ -142,9 +154,12 @@ class DiscordStatusManager:
                 self.original_status = data.get("custom_status")
                 
                 # Защита от "грязного" бэкапа: если прошлый запуск не завершился корректно
-                # и оставил слова песни в статусе, мы не должны бэкапить их как оригинал!
-                if self.original_status and self.original_status.get("emoji_name") == "🎵":
-                    self.original_status = None
+                # мы не должны бэкапить наш собственный статус как оригинал!
+                if self.original_status:
+                    is_our_lyrics = self.original_status.get("emoji_name") == "🎵"
+                    is_our_artist = self.original_status.get("text", "").endswith("\u200b")
+                    if is_our_lyrics or is_our_artist:
+                        self.original_status = None
                     
                 self.has_backed_up = True
                 if self.original_status:
@@ -179,9 +194,12 @@ class DiscordStatusManager:
             if not self.has_backed_up:
                 return  # If backup failed (e.g. rate limit or network), don't update!
 
+        # Добавляем невидимый символ \u200b в конец текста, чтобы потом распознать свой статус
+        final_text = (text[:127] + "\u200b") if text else ""
+        
         payload = {
             "custom_status": {
-                "text": text[:128] if text else "",
+                "text": final_text,
             }
         }
         if emoji_name:
@@ -1427,9 +1445,10 @@ async def main():
                 else:
                     await status_manager.update_status(raw['artist'], emoji_name=None)
                 
+            if is_settled:
                 # 3. Update Discord RPC
-                cover = meta['cover'] if meta else None
-                album_name = meta['album'] if meta else None
+                cover = meta['cover'] if isinstance(meta, dict) else None
+                album_name = meta['album'] if isinstance(meta, dict) else None
                 
                 is_new_rpc_track = track_id != rpc_track_id
                 is_status_changed = raw['status'] != rpc_status
@@ -1445,7 +1464,7 @@ async def main():
                                  end_ts = int(current_start_ts + raw['duration']) if raw['duration'] > 0 else None
 
                                  details = raw['title']
-                                 state = f"{raw['artist']} — {meta['album']}" if meta else raw['artist']
+                                 state = f"{raw['artist']} — {meta['album']}" if isinstance(meta, dict) else raw['artist']
 
                                  if len(details) > 128:
                                      details = details[:125] + "..."
@@ -1460,7 +1479,7 @@ async def main():
                                  await rpc.update(
                                      details=details,
                                      state=state,
-                                     large_image=meta['cover'] if meta else "logo",
+                                     large_image=meta['cover'] if isinstance(meta, dict) else "logo",
                                      small_image="logo",
                                      small_text="VEINYMusic",
                                      start=current_start_ts, end=end_ts,
@@ -1483,7 +1502,7 @@ async def main():
                                  await rpc.update(
                                      details=details,
                                      state=state,
-                                     large_image=meta['cover'] if meta else "logo",
+                                     large_image=meta['cover'] if isinstance(meta, dict) else "logo",
                                      activity_type=2
                                  )
                             
